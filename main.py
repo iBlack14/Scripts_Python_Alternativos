@@ -35,16 +35,16 @@ def run_daemon(engine, dry_run=False):
     def job():
         logger.info("--- Ejecutando tarea programada del demonio ---")
         try:
-            engine.sync_stock_only(dry_run=dry_run)
-            engine.sync_orders_to_odoo(dry_run=dry_run)
+            # Ejecutar sincronización completa (Productos, Stock, Pedidos, Cancelaciones)
+            engine.sync_all(dry_run=dry_run)
         except Exception as e:
             logger.error(f"Error en tarea periódica: {e}")
 
     # Ejecutar una vez al inicio
     job()
 
-    # Programar intervalos
-    schedule.every(SYNC_INTERVAL_MINUTES).minutes.do(job)
+    # Programar intervalos cada 10 segundos (ultra rápido)
+    schedule.every(10).seconds.do(job)
 
     try:
         while True:
