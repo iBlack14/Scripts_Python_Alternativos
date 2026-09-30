@@ -149,6 +149,12 @@ class SyncEngine:
                 "name": p["name"], "type": "simple",
                 "regular_price": p["price"], "description": p["description"],
                 "sku": sku, "manage_stock": p["manage_stock"],
+                "meta_data": [
+                    {
+                        "key": "_owc_distributor_price",
+                        "value": p.get("distributor_price", "")
+                    }
+                ]
             }
             if p["stock"] is not None:
                 payload["stock_quantity"] = p["stock"]
