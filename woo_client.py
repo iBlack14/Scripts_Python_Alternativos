@@ -5,6 +5,8 @@ Maneja operaciones de catálogo, stock por lotes y pedidos.
 
 from woocommerce import API
 import requests
+import base64
+import hashlib
 from config import WOO_URL, WOO_CONSUMER_KEY, WOO_CONSUMER_SECRET, WOO_VERSION, WOO_VERIFY_SSL, logger
 
 
@@ -16,6 +18,9 @@ class WooClient:
         self.version = WOO_VERSION
         self.verify_ssl = WOO_VERIFY_SSL
         self.api = None
+        # Caché de imágenes: {sku: (hash_md5, media_url)}
+        # Evita re-subir la misma imagen en cada ciclo de 10s
+        self._image_cache = {}
         self._init_api()
 
     def _init_api(self):
@@ -29,6 +34,80 @@ class WooClient:
                 verify_ssl=self.verify_ssl,
                 timeout=30
             )
+
+    # ─── Subir imagen a la Biblioteca de Medios de WordPress ────────────────
+    def upload_media_from_base64(self, image_b64: str, sku: str) -> str:
+        """
+        Sube una imagen base64 de Odoo a la Biblioteca de Medios de WordPress
+        usando la API REST de WP con autenticación Basic (consumer_key:consumer_secret).
+
+        Incluye caché por hash MD5: si la imagen no cambió desde la última subida,
+        retorna la URL ya almacenada sin hacer ningún request.
+
+        Returns:
+            str  URL pública de la imagen en WordPress, o '' si falla.
+        """
+        if not image_b64:
+            return ''
+
+        # 1. Calcular hash para detectar cambios
+        img_hash = hashlib.md5(image_b64.encode()).hexdigest()
+        cached = self._image_cache.get(sku)
+        if cached and cached[0] == img_hash:
+            return cached[1]  # misma imagen → devolver URL en caché
+
+        # 2. Decodificar base64 → bytes
+        try:
+            img_bytes = base64.b64decode(image_b64)
+        except Exception as e:
+            logger.warning(f"[IMG] SKU {sku}: error decodificando base64: {e}")
+            return ''
+
+        # 3. Detectar tipo MIME real por los primeros bytes (magic bytes)
+        if img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+            mime, ext = 'image/png',  'png'
+        elif img_bytes[:3] == b'\xff\xd8\xff':
+            mime, ext = 'image/jpeg', 'jpg'
+        elif img_bytes[:4] == b'RIFF' and img_bytes[8:12] == b'WEBP':
+            mime, ext = 'image/webp', 'webp'
+        else:
+            mime, ext = 'image/png',  'png'  # fallback
+
+        filename = f"odoo-{sku.replace('/', '-')}.{ext}"
+
+        # 4. Credenciales Basic Auth: consumer_key:consumer_secret
+        creds = base64.b64encode(
+            f"{self.consumer_key}:{self.consumer_secret}".encode()
+        ).decode()
+
+        media_url = f"{self.url}/wp-json/wp/v2/media"
+        headers = {
+            'Authorization':       f'Basic {creds}',
+            'Content-Type':        mime,
+            'Content-Disposition': f'attachment; filename="{filename}"',
+        }
+
+        try:
+            r = requests.post(
+                media_url,
+                data=img_bytes,
+                headers=headers,
+                verify=self.verify_ssl,
+                timeout=30,
+            )
+            if r.status_code in (200, 201):
+                src_url = r.json().get('source_url', '')
+                if src_url:
+                    self._image_cache[sku] = (img_hash, src_url)
+                    logger.debug(f"[IMG] SKU {sku} subida: {src_url}")
+                    return src_url
+                logger.warning(f"[IMG] SKU {sku}: respuesta sin source_url")
+            else:
+                logger.warning(f"[IMG] SKU {sku}: HTTP {r.status_code} — {r.text[:150]}")
+        except Exception as e:
+            logger.warning(f"[IMG] SKU {sku}: excepción al subir: {e}")
+
+        return ''
 
     def test_connection(self):
         """Prueba la conexión a la API de WooCommerce consultando el estado del sistema o productos."""

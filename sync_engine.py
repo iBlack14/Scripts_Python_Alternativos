@@ -143,10 +143,15 @@ class SyncEngine:
 
     # ── Fallback: API WooCommerce directa ─────────────────────────────────────
     def _push_via_woo_api(self, payload):
-        """Usa la REST API de WooCommerce si no hay plugin configurado."""
+        """Usa la REST API de WooCommerce si no hay plugin configurado.
+        Las imágenes se suben a la Biblioteca de Medios de WP para obtener
+        una URL real (WooCommerce NO acepta base64 directo).
+        """
+        import hashlib
         woo_map    = self.woo.get_all_products()
         create_lst = []
         update_lst = []
+        imgs_up = imgs_cached = imgs_skip = 0
 
         for p in payload:
             sku = p["sku"]
@@ -163,8 +168,26 @@ class SyncEngine:
                     {"key": "_owc_distributor_price", "value": p.get("distributor_price", "")}
                 ],
             }
-            if p.get("image"):
-                item["images"] = [{"src": f"data:image/png;base64,{p['image']}", "position": 0}]
+
+            # ── Imagen: subir a WP Media Library → usar URL real ──────────────
+            image_b64 = p.get("image", "")
+            if image_b64:
+                img_hash = hashlib.md5(image_b64.encode()).hexdigest()
+                cached   = self.woo._image_cache.get(sku)
+                if cached and cached[0] == img_hash:
+                    # Sin cambios → reutilizar URL del caché
+                    item["images"] = [{"src": cached[1], "position": 0}]
+                    imgs_cached += 1
+                else:
+                    # Nueva o modificada → subir
+                    url = self.woo.upload_media_from_base64(image_b64, sku)
+                    if url:
+                        item["images"] = [{"src": url, "position": 0}]
+                        imgs_up += 1
+                    else:
+                        imgs_skip += 1
+            else:
+                imgs_skip += 1
 
             if sku in woo_map:
                 item["id"] = woo_map[sku]["id"]
@@ -172,9 +195,18 @@ class SyncEngine:
             else:
                 create_lst.append(item)
 
+        logger.info(
+            f"Imágenes → Subidas: {imgs_up}  "
+            f"Caché (sin cambios): {imgs_cached}  "
+            f"Sin imagen: {imgs_skip}"
+        )
         results = self.woo.batch_update_products(create_items=create_lst, update_items=update_lst)
-        logger.info(f"════ FIN SYNC (API Woo): {results['created']} creados, {results['updated']} actualizados ════")
+        logger.info(
+            f"════ FIN SYNC (API Woo): {results['created']} creados, "
+            f"{results['updated']} actualizados ════"
+        )
         return results
+
 
     # ══════════════════════════════════════════════════════════════════════════
     #  STOCK RÁPIDO  (solo inventario)
