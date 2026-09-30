@@ -121,6 +121,7 @@ class WooClient:
             chunk = create_items[i:i + batch_size]
             payload = {"create": chunk}
             try:
+                logger.info(f"Enviando lote de creación ({i+1} a {min(i+batch_size, total_creates)} de {total_creates})...")
                 res = self.api.post("products/batch", payload)
                 if res.status_code in (200, 201):
                     data = res.json()
@@ -135,6 +136,7 @@ class WooClient:
             chunk = update_items[i:i + batch_size]
             payload = {"update": chunk}
             try:
+                logger.info(f"Enviando lote de actualización ({i+1} a {min(i+batch_size, total_updates)} de {total_updates})...")
                 res = self.api.post("products/batch", payload)
                 if res.status_code in (200, 201):
                     data = res.json()
