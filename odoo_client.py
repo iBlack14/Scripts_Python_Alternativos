@@ -184,7 +184,9 @@ class OdooClient:
             alternate_field = 'barcode' if match_field == 'default_code' else 'default_code'
             key = p.get(match_field) or p.get(alternate_field)
             if key:
-                qty = p.get('free_qty') or p.get('qty_available', 0.0)
+                qty = p.get('qty_available')
+                if qty is None:
+                    qty = p.get('free_qty', 0.0)
                 stock_map[str(key).strip()] = {
                     "odoo_id": p['id'],
                     "qty": max(0, int(qty)),

@@ -1,5 +1,5 @@
 """
-Motor de Sincronización Odoo 15 <-> WooCommerce  ·  v3.0
+Motor de Sincronización Odoo 15 <-> WooCommerce  ·  v3.1
 ─────────────────────────────────────────────────────────
 Bucle principal: Productos (crear + precio) + Stock + Imágenes
 Sin categorías, sin catálogo pesado.
@@ -77,7 +77,9 @@ class SyncEngine:
             if not sku:
                 sku = f"ODOO-{p['id']}"
 
-            qty        = p.get("free_qty") or p.get("qty_available", 0.0)
+            qty        = p.get("qty_available")
+            if qty is None:
+                qty = p.get("free_qty", 0.0)
             price_pub  = p.get("public_price")  or p.get("list_price", 0.0)
             price_dist = p.get("ferretero_price") or p.get("list_price", 0.0)
             
