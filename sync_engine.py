@@ -58,7 +58,7 @@ class SyncEngine:
         logger.info("=== Sincronizando Catálogo de Productos Odoo → WooCommerce ===")
 
         domain = [('sale_ok', '=', True)] if SYNC_ONLY_SALE_OK else []
-        domain.extend(['|', ('default_code', '!=', False), ('barcode', '!=', False)])
+        # Traemos todos los productos almacenables, sin importar si tienen SKU o no.
         domain.append(('type', '=', 'product'))
 
         odoo_products = self.odoo.get_products(domain=domain)
@@ -72,8 +72,10 @@ class SyncEngine:
         for p in odoo_products:
             alternate_field = 'barcode' if self.match_field == 'default_code' else 'default_code'
             sku = str(p.get(self.match_field) or p.get(alternate_field) or "").strip()
+            
+            # Si el producto no tiene Referencia Interna ni Código de Barras, le damos uno automático
             if not sku:
-                continue
+                sku = f"ODOO-{p['id']}"
 
             qty = p.get('free_qty') or p.get('qty_available', 0.0)
             
