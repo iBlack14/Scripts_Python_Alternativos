@@ -157,31 +157,34 @@ class SyncEngine:
         def get_or_create_category(cat_name):
             if not cat_name:
                 return []
-            # Tomar solo la última parte de la categoría (ej. "Todos / Ferretería / Herramientas" -> "Herramientas")
-            clean_name = cat_name.split('/')[-1].strip()
+            
+            # Estrategia de Categoría Padre:
+            parts = [p.strip() for p in cat_name.split('/')]
+            if len(parts) > 1 and parts[0].lower() in ['all', 'todos', 'almacenable', 'producto']:
+                clean_name = parts[1]
+            else:
+                clean_name = parts[0]
+                
             key = clean_name.lower()
             if key in wc_categories:
                 return [{"id": wc_categories[key]}]
             
-            # Crear si no existe
-            logger.info(f"Intentando vincular categoría: {clean_name} ...")
+            # Crear si no existe (Silencioso para no ensuciar la consola)
             try:
                 res = self.woo.api.post("products/categories", {"name": clean_name})
                 data = res.json()
                 if res.status_code in (200, 201):
                     new_id = data.get("id")
                     wc_categories[key] = new_id
+                    logger.info(f" -> Creada nueva categoría global: {clean_name}")
                     return [{"id": new_id}]
                 elif res.status_code == 400 and data.get("code") == "term_exists":
-                    # Si ya existe pero no estaba en caché, recuperamos el ID del error
                     existing_id = data.get("data", {}).get("term_id")
                     if existing_id:
                         wc_categories[key] = existing_id
                         return [{"id": existing_id}]
-                else:
-                    logger.error(f" -> Error al crear categoría '{clean_name}': {res.text[:100]}")
-            except Exception as e:
-                logger.error(f"Error creando categoría {clean_name}: {e}")
+            except Exception:
+                pass
             return []
 
         create_list = []
