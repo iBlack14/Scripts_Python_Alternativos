@@ -27,36 +27,26 @@ def banner():
 
 
 def run_daemon(engine, dry_run=False):
-    """Ejecuta el conector en modo servicio/demonio periódico."""
+    """Ejecuta el conector en modo servicio/demónio periódico."""
     print(f"\n{Fore.GREEN}[MODO DEMONIO ACTIVADO]{Style.RESET_ALL}")
-    print(f"Sincronizando stock A Mano y pedidos cada {SYNC_INTERVAL_MINUTES} minutos...")
+    print(f"Sincronizando stock, pedidos y cancelaciones cada {SYNC_INTERVAL_MINUTES} minutos.")
+    print(f"{Fore.YELLOW}Catálogo desactivado (ya importado). Usa --sync-products para forzarlo.{Style.RESET_ALL}")
     print("Presiona Ctrl + C para detener el servicio.\n")
 
     def fast_job():
-        logger.info("--- Ejecutando tarea rápida (Stock, Pedidos, Cancelaciones) ---")
+        logger.info("--- Ejecutando tarea periódica (Stock, Pedidos, Cancelaciones) ---")
         try:
             engine.sync_stock_only(dry_run=dry_run)
             engine.sync_orders_to_odoo(dry_run=dry_run)
             engine.sync_cancellations_to_woo(dry_run=dry_run)
         except Exception as e:
-            logger.error(f"Error en tarea rápida: {e}")
+            logger.error(f"Error en tarea periódica: {e}")
 
-    def heavy_job():
-        logger.info("--- Ejecutando tarea pesada (Catálogo completo de Productos) ---")
-        try:
-            engine.sync_products(dry_run=dry_run)
-        except Exception as e:
-            logger.error(f"Error en tarea pesada: {e}")
-
-    # Al iniciar, correr ambas
-    heavy_job()
+    # Ejecutar inmediatamente al arrancar
     fast_job()
 
-    # Programar intervalos
-    # Lo rápido (Stock y Pedidos) cada 10 segundos
-    schedule.every(10).seconds.do(fast_job)
-    # Lo pesado (Catálogo de 815 productos) cada 60 minutos (para no tumbar el servidor)
-    schedule.every(60).minutes.do(heavy_job)
+    # Programar intervalo
+    schedule.every(SYNC_INTERVAL_MINUTES).minutes.do(fast_job)
 
     try:
         while True:
@@ -72,13 +62,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Conector y Sincronizador de Datos entre Odoo 15 y WooCommerce (WordPress)."
     )
-    parser.add_argument("--test", action="store_true", help="Probar conexiones a Odoo y WooCommerce")
-    parser.add_argument("--sync-all", action="store_true", help="Sincronizar Catálogo + Stock + Pedidos")
-    parser.add_argument("--sync-products", action="store_true", help="Sincronizar Catálogo y Precios de Odoo a WooCommerce")
-    parser.add_argument("--sync-stock", action="store_true", help="Sincronizar existencias/stock rápidamente")
-    parser.add_argument("--sync-orders", action="store_true", help="Importar pedidos de WooCommerce a Odoo")
-    parser.add_argument("--daemon", action="store_true", help="Ejecutar en bucle continuo en segundo plano")
-    parser.add_argument("--dry-run", action="store_true", help="Simular operaciones sin escribir cambios")
+    parser.add_argument("--test",          action="store_true", help="Probar conexiones a Odoo y WooCommerce")
+    parser.add_argument("--sync-all",      action="store_true", help="Sincronizar Stock + Pedidos (sin catálogo)")
+    parser.add_argument("--sync-products", action="store_true", help="[Avanzado] Sincronizar catálogo y precios Odoo → WooCommerce")
+    parser.add_argument("--sync-images",   action="store_true", help="Sincronizar solo imágenes de productos Odoo → WooCommerce")
+    parser.add_argument("--sync-stock",    action="store_true", help="Sincronizar existencias/stock rápidamente")
+    parser.add_argument("--sync-orders",   action="store_true", help="Importar pedidos de WooCommerce a Odoo")
+    parser.add_argument("--daemon",        action="store_true", help="Ejecutar en bucle continuo en segundo plano")
+    parser.add_argument("--dry-run",       action="store_true", help="Simular operaciones sin escribir cambios")
 
     args = parser.parse_args()
 
@@ -104,6 +95,8 @@ def main():
 
     if args.sync_products:
         engine.sync_products(dry_run=args.dry_run)
+    elif args.sync_images:
+        engine.sync_images_only(dry_run=args.dry_run)
     elif args.sync_stock:
         engine.sync_stock_only(dry_run=args.dry_run)
     elif args.sync_orders:
