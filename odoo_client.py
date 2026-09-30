@@ -92,7 +92,8 @@ class OdooClient:
                 'weight',
                 'active',
                 'product_tmpl_id',
-                'image_128',    # Usamos esto solo para saber si tiene imagen (ocupa pocos bytes)
+                'image_1920',   # Imagen principal en alta resolución (base64)
+                'image_128',    # Miniatura de respaldo
             ]
         
         try:

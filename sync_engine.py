@@ -81,8 +81,7 @@ class SyncEngine:
             price_pub  = p.get("public_price")  or p.get("list_price", 0.0)
             price_dist = p.get("ferretero_price") or p.get("list_price", 0.0)
             
-            # Usamos image_128 solo como bandera booleana para saber si hay imagen en Odoo
-            has_image = bool(p.get("image_128"))
+            image_b64  = p.get("image_1920") or p.get("image_128") or ""
 
             payload.append({
                 "odoo_id":           p["id"],
@@ -94,7 +93,7 @@ class SyncEngine:
                 "weight":            str(p.get("weight", "")) if p.get("weight") else "",
                 "manage_stock":      True,
                 "stock":             int(max(0, qty)),
-                "has_image":         has_image,
+                "image_b64":         image_b64,
             })
 
         logger.info(f"Preparados {len(payload)} productos.")
@@ -147,8 +146,8 @@ class SyncEngine:
     # ── Fallback: API WooCommerce directa ─────────────────────────────────────
     def _push_via_woo_api(self, payload):
         """Usa la REST API de WooCommerce directa.
-        Para las imágenes, enviamos la URL pública de Odoo para que WooCommerce
-        la descargue automáticamente.
+        Para las imágenes, usa las credenciales WP_USER y WP_APP_PASSWORD
+        para subirlas a la Biblioteca de Medios.
         """
         woo_map    = self.woo.get_all_products()
         create_lst = []
@@ -156,8 +155,6 @@ class SyncEngine:
         imgs_set   = 0
         imgs_skip  = 0
         
-        odoo_base_url = self.odoo.url.rstrip("/")
-
         for p in payload:
             sku = p["sku"]
             item = {
@@ -174,11 +171,9 @@ class SyncEngine:
                 ],
             }
 
-            # ── Lógica de Imágenes (URL directa a Odoo) ──────────────
-            if p.get("has_image"):
-                # URL pública de Odoo para la imagen de este producto
-                odoo_img_url = f"{odoo_base_url}/web/image/product.product/{p['odoo_id']}/image_1920"
-                
+            # ── Lógica de Imágenes (Subir a WP primero) ──────────────
+            image_b64 = p.get("image_b64")
+            if image_b64:
                 if sku in woo_map:
                     # Si ya existe en Woo, verificar si ya tiene imagen
                     woo_prod = woo_map[sku]
@@ -186,21 +181,27 @@ class SyncEngine:
                     has_woo_img = False
                     
                     if woo_images:
-                        # WooCommerce a veces pone un placeholder. Si es un placeholder, lo ignoramos.
                         src = woo_images[0].get("src", "")
                         if "woocommerce-placeholder" not in src:
                             has_woo_img = True
                     
                     if not has_woo_img:
-                        item["images"] = [{"src": odoo_img_url, "position": 0}]
-                        imgs_set += 1
+                        url = self.woo.upload_media_from_base64(image_b64, sku)
+                        if url:
+                            item["images"] = [{"src": url, "position": 0}]
+                            imgs_set += 1
+                        else:
+                            imgs_skip += 1
                     else:
-                        # Ya tiene imagen, no la re-enviamos para evitar duplicados en la Biblioteca de WP
                         imgs_skip += 1
                 else:
-                    # Producto nuevo, le mandamos la imagen
-                    item["images"] = [{"src": odoo_img_url, "position": 0}]
-                    imgs_set += 1
+                    # Producto nuevo, subir imagen
+                    url = self.woo.upload_media_from_base64(image_b64, sku)
+                    if url:
+                        item["images"] = [{"src": url, "position": 0}]
+                        imgs_set += 1
+                    else:
+                        imgs_skip += 1
             else:
                 imgs_skip += 1
 
@@ -211,8 +212,8 @@ class SyncEngine:
                 create_lst.append(item)
 
         logger.info(
-            f"Imágenes → URL enviada a Woo para descarga: {imgs_set} | "
-            f"Omitidas (ya tenían imagen o sin imagen en Odoo): {imgs_skip}"
+            f"Imágenes → Subidas a WP y vinculadas a Woo: {imgs_set} | "
+            f"Omitidas (ya tenían o sin imagen): {imgs_skip}"
         )
         
         results = self.woo.batch_update_products(create_items=create_lst, update_items=update_lst)
