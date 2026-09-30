@@ -91,7 +91,9 @@ class OdooClient:
                 'categ_id',
                 'weight',
                 'active',
-                'product_tmpl_id'
+                'product_tmpl_id',
+                'image_1920',   # Imagen principal en alta resolución (base64)
+                'image_128',    # Miniatura de respaldo
             ]
         
         try:

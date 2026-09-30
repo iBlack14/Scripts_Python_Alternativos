@@ -83,6 +83,9 @@ class SyncEngine:
             base_price = p.get('public_price') or p.get('list_price', 0.0)
             dist_price = p.get('ferretero_price') or p.get('list_price', 0.0)
 
+            # Imagen principal: preferir image_1920, sino image_128
+            image_b64 = p.get('image_1920') or p.get('image_128') or ''
+
             item = {
                 "sku":          sku,
                 "name":         p.get('name', ''),
@@ -93,6 +96,7 @@ class SyncEngine:
                 "manage_stock": True,
                 "stock":        int(max(0, qty)),
                 "category":     p.get('categ_id', [None, ''])[1] if p.get('categ_id') else '',
+                "image":        image_b64,   # base64 de la imagen principal de Odoo
             }
             products_payload.append(item)
 
@@ -158,12 +162,31 @@ class SyncEngine:
             if not cat_name:
                 return []
             
-            # Estrategia de Categoría Padre:
+            # 1. Obtener el nombre original
             parts = [p.strip() for p in cat_name.split('/')]
             if len(parts) > 1 and parts[0].lower() in ['all', 'todos', 'almacenable', 'producto']:
-                clean_name = parts[1]
+                original_name = parts[1].lower()
             else:
-                clean_name = parts[0]
+                original_name = parts[0].lower()
+
+            # 2. Diccionario Mágico: Agrupar 101 categorías en 8 Principales
+            MAPPING = {
+                "Materiales de Construcción": ["cemento", "ladrillo", "fierro", "acero", "calamina", "teja", "techo", "multiplaca", "puzolana", "tecnopor", "triplay", "tablero", "panel", "caja", "marco", "losa", "brea", "espaciador"],
+                "Herramientas Manuales": ["alicate", "azada", "barreta", "broca", "cizalla", "cincel", "comba", "disco", "escoba", "espatula", "flexometro", "hacha", "herramienta", "lampa", "lija", "lima", "pala", "pico", "rodillo", "brocha", "medidor", "balanza"],
+                "Ferretería General": ["alambre", "anillo", "candado", "carretilla", "cerradura", "clavo", "cadena", "soga", "hilo", "embalaje", "forte", "bizagra", "bisagra", "tapon"],
+                "Tuberías y Conexiones": ["tubo", "codo", "niple", "adaptador", "union", "tee", "valvula", "manguera", "accesorio"],
+                "Pinturas y Adhesivos": ["pintura", "barniz", "ocre", "temple", "imprimante", "pegamento", "silicona", "cinta", "sellante", "cola", "formador", "kreso"],
+                "Eléctricos e Iluminación": ["cable", "foco", "interruptor", "tomacorriente", "electrodo"],
+                "Baños y Grifería": ["llave", "lavadero", "mezcladora", "tanque", "ducha", "caño"],
+                "Seguridad Industrial": ["casco", "guante", "mascarilla", "traje"]
+            }
+
+            # 3. Buscar a qué categoría grande pertenece
+            clean_name = "Productos Diversos" # Por defecto
+            for main_category, keywords in MAPPING.items():
+                if any(kw in original_name for kw in keywords):
+                    clean_name = main_category
+                    break
                 
             key = clean_name.lower()
             if key in wc_categories:
@@ -176,7 +199,7 @@ class SyncEngine:
                 if res.status_code in (200, 201):
                     new_id = data.get("id")
                     wc_categories[key] = new_id
-                    logger.info(f" -> Creada nueva categoría global: {clean_name}")
+                    logger.info(f" -> Creada nueva macro-categoría: {clean_name}")
                     return [{"id": new_id}]
                 elif res.status_code == 400 and data.get("code") == "term_exists":
                     existing_id = data.get("data", {}).get("term_id")
@@ -207,6 +230,13 @@ class SyncEngine:
             }
             if p["stock"] is not None:
                 payload["stock_quantity"] = p["stock"]
+
+            # ── Imagen principal: enviar como data-URI base64 ────────────────
+            image_b64 = p.get("image", "")
+            if image_b64:
+                data_uri = f"data:image/png;base64,{image_b64}"
+                payload["images"] = [{"src": data_uri, "position": 0}]
+
             if sku in woo_products_map:
                 payload["id"] = woo_products_map[sku]["id"]
                 update_list.append(payload)
