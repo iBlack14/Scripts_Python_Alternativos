@@ -8,7 +8,7 @@ import sys
 import time
 import schedule
 from colorama import init, Fore, Style
-from config import validate_config, SYNC_INTERVAL_MINUTES, logger
+from config import validate_config, SYNC_INTERVAL_MINUTES, SYNC_INTERVAL_SECONDS, logger
 from sync_engine import SyncEngine
 import test_connection
 
@@ -29,12 +29,13 @@ def banner():
 def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
     print(f"\n{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL}")
-    print(f"Ciclo completo cada {SYNC_INTERVAL_MINUTES} min: Productos + Stock + Precio + Imágenes + Pedidos")
+    print(f"Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL}  "
+          f"→  Productos + Stock + Precio + Imágenes + Pedidos")
     print(f"{Fore.YELLOW}Sin categorías. Sin catálogo pesado.{Style.RESET_ALL}")
     print("Presiona Ctrl + C para detener.\n")
 
     def ciclo():
-        logger.info("─── Iniciando ciclo completo ───")
+        logger.info(f"─── Iniciando ciclo (cada {SYNC_INTERVAL_SECONDS}s) ───")
         try:
             engine.sync_all(dry_run=dry_run)
         except Exception as e:
@@ -43,8 +44,8 @@ def run_daemon(engine, dry_run=False):
     # Ejecutar inmediatamente al arrancar
     ciclo()
 
-    # Repetir cada N minutos
-    schedule.every(SYNC_INTERVAL_MINUTES).minutes.do(ciclo)
+    # Repetir cada N segundos
+    schedule.every(SYNC_INTERVAL_SECONDS).seconds.do(ciclo)
 
     try:
         while True:
@@ -52,7 +53,6 @@ def run_daemon(engine, dry_run=False):
             time.sleep(1)
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}Bucle detenido por el usuario.{Style.RESET_ALL}")
-
 
 
 def main():

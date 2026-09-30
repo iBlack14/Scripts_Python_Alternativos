@@ -38,8 +38,19 @@ WOO_VERIFY_SSL = os.getenv("WOO_VERIFY_SSL", "True").lower() in ("true", "1", "y
 # Sync Settings
 ODOO_MATCH_FIELD = os.getenv("ODOO_MATCH_FIELD", "default_code")  # 'default_code' o 'barcode'
 SYNC_ONLY_SALE_OK = os.getenv("SYNC_ONLY_SALE_OK", "True").lower() in ("true", "1", "yes")
-SYNC_IMAGES = os.getenv("SYNC_IMAGES", "False").lower() in ("true", "1", "yes")
-SYNC_INTERVAL_MINUTES = int(os.getenv("SYNC_INTERVAL_MINUTES", "15"))
+
+# Intervalo del bucle en SEGUNDOS (tiene prioridad sobre SYNC_INTERVAL_MINUTES)
+# Por defecto: 10 segundos → casi tiempo real
+_interval_sec_env = os.getenv("SYNC_INTERVAL_SECONDS", "")
+_interval_min_env = int(os.getenv("SYNC_INTERVAL_MINUTES", "15"))
+
+if _interval_sec_env:
+    SYNC_INTERVAL_SECONDS = int(_interval_sec_env)
+else:
+    SYNC_INTERVAL_SECONDS = _interval_min_env * 60  # convertir minutos → segundos
+
+# Alias en minutos (para compatibilidad)
+SYNC_INTERVAL_MINUTES = SYNC_INTERVAL_SECONDS // 60 or 1
 
 
 def validate_config():
