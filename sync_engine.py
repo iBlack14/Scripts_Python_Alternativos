@@ -140,6 +140,38 @@ class SyncEngine:
     def _sync_products_via_woo_api(self, products_payload):
         """Fallback: usar la API WooCommerce directamente si no hay token del plugin."""
         woo_products_map = self.woo.get_all_products()
+        
+        # 1. Obtener/Crear categorías en WooCommerce
+        logger.info("Mapeando categorías en WooCommerce...")
+        wc_categories = {}
+        try:
+            res_cat = self.woo.api.get("products/categories", params={"per_page": 100})
+            if res_cat.status_code == 200:
+                for c in res_cat.json():
+                    wc_categories[c["name"].lower()] = c["id"]
+        except Exception as e:
+            logger.error(f"Error obteniendo categorías de Woo: {e}")
+
+        def get_or_create_category(cat_name):
+            if not cat_name:
+                return []
+            # Tomar solo la última parte de la categoría (ej. "Todos / Ferretería / Herramientas" -> "Herramientas")
+            clean_name = cat_name.split('/')[-1].strip()
+            key = clean_name.lower()
+            if key in wc_categories:
+                return [{"id": wc_categories[key]}]
+            
+            # Crear si no existe
+            try:
+                res = self.woo.api.post("products/categories", {"name": clean_name})
+                if res.status_code in (200, 201):
+                    new_id = res.json()["id"]
+                    wc_categories[key] = new_id
+                    return [{"id": new_id}]
+            except Exception as e:
+                logger.error(f"Error creando categoría {clean_name}: {e}")
+            return []
+
         create_list = []
         update_list = []
 
@@ -149,6 +181,8 @@ class SyncEngine:
                 "name": p["name"], "type": "simple",
                 "regular_price": p["price"], "description": p["description"],
                 "sku": sku, "manage_stock": p["manage_stock"],
+                "categories": get_or_create_category(p.get("category", "")),
+                "weight": str(p.get("weight", "")),
                 "meta_data": [
                     {
                         "key": "_owc_distributor_price",
