@@ -247,6 +247,104 @@ class SyncEngine:
         logger.info(f"Sync productos (API WooCommerce): {results['created']} creados, {results['updated']} actualizados.")
         return results
 
+    # ─── Sincronización solo de Imágenes Odoo → WooCommerce ────────────────────
+    def sync_images_only(self, dry_run=False):
+        """Sincroniza únicamente las imágenes principales de productos Odoo → WooCommerce.
+        No modifica nombre, precio, stock ni ningún otro campo."""
+        logger.info("=== Sincronizando Imágenes de Productos Odoo → WooCommerce ===")
+
+        domain = [('type', '=', 'product')]
+        if SYNC_ONLY_SALE_OK:
+            domain.append(('sale_ok', '=', True))
+
+        # Traer solo los campos necesarios para ahorrar ancho de banda
+        odoo_products = self.odoo.get_products(
+            domain=domain,
+            fields=['id', 'default_code', 'barcode', 'name', 'image_1920', 'image_128', 'product_tmpl_id']
+        )
+        logger.info(f"Odoo: {len(odoo_products)} productos encontrados.")
+
+        if not odoo_products:
+            return {"status": "empty", "sent": 0}
+
+        images_payload = []
+        for p in odoo_products:
+            alternate_field = 'barcode' if self.match_field == 'default_code' else 'default_code'
+            sku = str(p.get(self.match_field) or p.get(alternate_field) or '').strip()
+            if not sku:
+                sku = f"ODOO-{p['id']}"
+
+            image_b64 = p.get('image_1920') or p.get('image_128') or ''
+            if not image_b64:
+                continue  # sin imagen en Odoo → omitir
+
+            images_payload.append({"sku": sku, "image": image_b64})
+
+        logger.info(f"Preparados {len(images_payload)} productos con imagen para enviar.")
+
+        if dry_run:
+            logger.info("[DRY-RUN] No se enviaron imágenes.")
+            return {"status": "dry-run", "prepared": len(images_payload)}
+
+        if self.use_plugin_api:
+            return self._send_images_to_plugin(images_payload)
+        else:
+            return self._sync_images_via_woo_api(images_payload)
+
+    def _send_images_to_plugin(self, images_payload):
+        """Envía solo imágenes al plugin WordPress reutilizando el endpoint push-products
+        con un payload mínimo (solo sku + image)."""
+        batch_size = 50  # lótes más pequeños: las imágenes son pesadas
+        total_updated = 0
+        total_errors = []
+
+        for i in range(0, len(images_payload), batch_size):
+            chunk = images_payload[i:i + batch_size]
+            try:
+                r = requests.post(
+                    self._plugin_url("push-products"),
+                    json={"products": chunk},
+                    headers=self._plugin_headers(),
+                    timeout=120,
+                    verify=False
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    total_updated += data.get("updated", 0) + data.get("created", 0)
+                    total_errors.extend(data.get("errors", []))
+                    logger.info(f"Imágenes lote {i//batch_size + 1}: {data.get('updated',0)} actualizadas, {data.get('created',0)} creadas")
+                else:
+                    logger.error(f"Error enviando imágenes lote {i//batch_size + 1}: HTTP {r.status_code} — {r.text[:200]}")
+            except Exception as e:
+                logger.error(f"Excepción enviando imágenes lote {i//batch_size + 1}: {e}")
+
+        logger.info(f"Sync de imágenes finalizada: {total_updated} actualizadas.")
+        return {"updated": total_updated, "errors": total_errors}
+
+    def _sync_images_via_woo_api(self, images_payload):
+        """Fallback: actualizar imagen directamente por API WooCommerce si no hay plugin."""
+        woo_products_map = self.woo.get_all_products()
+        update_list = []
+
+        for item in images_payload:
+            sku = item["sku"]
+            if sku not in woo_products_map:
+                continue
+            woo_id = woo_products_map[sku]["id"]
+            data_uri = f"data:image/png;base64,{item['image']}"
+            update_list.append({
+                "id": woo_id,
+                "images": [{"src": data_uri, "position": 0}]
+            })
+
+        if not update_list:
+            logger.info("Ningún producto con imagen encontrado en WooCommerce.")
+            return {"updated": 0}
+
+        results = self.woo.batch_update_products(update_items=update_list)
+        logger.info(f"Imágenes actualizadas (API WooCommerce): {results['updated']} productos.")
+        return results
+
     # ─── Sincronización Rápida de Stock ─────────────────────────────────────
     def sync_stock_only(self, dry_run=False):
         logger.info("=== Sincronizando Stock/Inventario Odoo → WooCommerce ===")
@@ -394,8 +492,13 @@ class SyncEngine:
 
     # ─── Sincronización Total ────────────────────────────────────────────────
     def sync_all(self, dry_run=False):
-        res_prod        = self.sync_products(dry_run=dry_run)
-        res_stock       = self.sync_stock_only(dry_run=dry_run)
-        res_orders      = self.sync_orders_to_odoo(dry_run=dry_run)
-        res_cancel      = self.sync_cancellations_to_woo(dry_run=dry_run)
-        return {"products": res_prod, "stock": res_stock, "orders": res_orders, "cancellations": res_cancel}
+        """
+        Sincronización rutinaria: Stock + Pedidos + Cancelaciones.
+        El catálogo completo (nombre/precio) está DESACTIVADO porque ya fue importado.
+          → Usa  python main.py --sync-products  si necesitas forzar el catálogo.
+          → Usa  python main.py --sync-images    para actualizar solo las imágenes.
+        """
+        res_stock   = self.sync_stock_only(dry_run=dry_run)
+        res_orders  = self.sync_orders_to_odoo(dry_run=dry_run)
+        res_cancel  = self.sync_cancellations_to_woo(dry_run=dry_run)
+        return {"stock": res_stock, "orders": res_orders, "cancellations": res_cancel}
