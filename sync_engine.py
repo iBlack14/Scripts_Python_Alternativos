@@ -164,14 +164,20 @@ class SyncEngine:
                 return [{"id": wc_categories[key]}]
             
             # Crear si no existe
-            logger.info(f"Creando nueva categoría en WooCommerce: {clean_name} ...")
+            logger.info(f"Intentando vincular categoría: {clean_name} ...")
             try:
                 res = self.woo.api.post("products/categories", {"name": clean_name})
+                data = res.json()
                 if res.status_code in (200, 201):
-                    new_id = res.json()["id"]
+                    new_id = data.get("id")
                     wc_categories[key] = new_id
-                    logger.info(f" -> Categoría '{clean_name}' creada con ID {new_id}")
                     return [{"id": new_id}]
+                elif res.status_code == 400 and data.get("code") == "term_exists":
+                    # Si ya existe pero no estaba en caché, recuperamos el ID del error
+                    existing_id = data.get("data", {}).get("term_id")
+                    if existing_id:
+                        wc_categories[key] = existing_id
+                        return [{"id": existing_id}]
                 else:
                     logger.error(f" -> Error al crear categoría '{clean_name}': {res.text[:100]}")
             except Exception as e:
