@@ -1,0 +1,11 @@
+# Configuración y credenciales
+.env
+
+# Logs
+*.log
+sync_activity.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class

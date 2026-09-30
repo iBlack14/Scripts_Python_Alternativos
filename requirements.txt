@@ -1,0 +1,7 @@
+# Dependencias para el Conector Odoo 15 <-> WooCommerce
+woocommerce>=3.0.0
+requests>=2.31.0
+python-dotenv>=1.0.1
+schedule>=1.2.1
+colorama>=0.4.6
+tabulate>=0.9.0
