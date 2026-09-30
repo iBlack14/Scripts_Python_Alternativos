@@ -109,16 +109,29 @@ class SyncEngine:
         else:
             return self._push_via_woo_api(payload)
 
-    # ── Envío al Plugin WordPress ─────────────────────────────────────────────
-    def _push_to_plugin(self, payload, batch_size=50):
-        """Lotes de 50 porque las imágenes base64 son pesadas."""
+    # ── Envío al Plugin WordPress ──────────────────────────────────────────────
+    def _push_to_plugin(self, payload):
+        """Envía productos al plugin WordPress.
+        Los productos CON imagen van en lotes de 5 (imagen pesa ~2MB, evitar
+        superar post_max_size de PHP). Los SIN imagen van de 100 en 100.
+        """
         total_created = 0
         total_updated = 0
         total_errors  = []
 
-        for i in range(0, len(payload), batch_size):
-            chunk = payload[i : i + batch_size]
-            lote  = i // batch_size + 1
+        with_img    = [p for p in payload if p.get("image_b64")]
+        without_img = [p for p in payload if not p.get("image_b64")]
+
+        logger.info(f"Productos con imagen: {len(with_img)} | Sin imagen: {len(without_img)}")
+
+        batches = []
+        for i in range(0, len(with_img), 5):
+            batches.append(with_img[i:i+5])
+        for i in range(0, len(without_img), 100):
+            batches.append(without_img[i:i+100])
+
+        for idx, chunk in enumerate(batches, 1):
+            tiene_img = any(p.get("image_b64") for p in chunk)
             try:
                 r = requests.post(
                     self._pu("push-products"),
@@ -131,16 +144,20 @@ class SyncEngine:
                     d = r.json()
                     total_created += d.get("created", 0)
                     total_updated += d.get("updated", 0)
-                    total_errors.extend(d.get("errors", []))
+                    errs = d.get("errors", [])
+                    total_errors.extend(errs)
+                    img_tag = " [CON IMG]" if tiene_img else ""
                     logger.info(
-                        f"Lote {lote}: Creados={d.get('created',0)}  "
+                        f"Lote {idx}{img_tag}: Creados={d.get('created',0)}  "
                         f"Actualizados={d.get('updated',0)}  "
                         f"Omitidos={d.get('skipped',0)}"
                     )
+                    for err in errs:
+                        logger.warning(f"  [IMG ERROR] {err}")
                 else:
-                    logger.error(f"Lote {lote} HTTP {r.status_code}: {r.text[:200]}")
+                    logger.error(f"Lote {idx} HTTP {r.status_code}: {r.text[:400]}")
             except Exception as e:
-                logger.error(f"Lote {lote} excepción: {e}")
+                logger.error(f"Lote {idx} excepción: {e}")
 
         logger.info(f"════ FIN SYNC: {total_created} creados, {total_updated} actualizados ════")
         return {"created": total_created, "updated": total_updated, "errors": total_errors}
