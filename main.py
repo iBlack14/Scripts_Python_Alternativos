@@ -27,33 +27,32 @@ def banner():
 
 
 def run_daemon(engine, dry_run=False):
-    """Ejecuta el conector en modo servicio/demónio periódico."""
-    print(f"\n{Fore.GREEN}[MODO DEMONIO ACTIVADO]{Style.RESET_ALL}")
-    print(f"Sincronizando stock, pedidos y cancelaciones cada {SYNC_INTERVAL_MINUTES} minutos.")
-    print(f"{Fore.YELLOW}Catálogo desactivado (ya importado). Usa --sync-products para forzarlo.{Style.RESET_ALL}")
-    print("Presiona Ctrl + C para detener el servicio.\n")
+    """Ejecuta el conector en modo bucle continuo."""
+    print(f"\n{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL}")
+    print(f"Ciclo completo cada {SYNC_INTERVAL_MINUTES} min: Productos + Stock + Precio + Imágenes + Pedidos")
+    print(f"{Fore.YELLOW}Sin categorías. Sin catálogo pesado.{Style.RESET_ALL}")
+    print("Presiona Ctrl + C para detener.\n")
 
-    def fast_job():
-        logger.info("--- Ejecutando tarea periódica (Stock, Pedidos, Cancelaciones) ---")
+    def ciclo():
+        logger.info("─── Iniciando ciclo completo ───")
         try:
-            engine.sync_stock_only(dry_run=dry_run)
-            engine.sync_orders_to_odoo(dry_run=dry_run)
-            engine.sync_cancellations_to_woo(dry_run=dry_run)
+            engine.sync_all(dry_run=dry_run)
         except Exception as e:
-            logger.error(f"Error en tarea periódica: {e}")
+            logger.error(f"Error en ciclo: {e}")
 
     # Ejecutar inmediatamente al arrancar
-    fast_job()
+    ciclo()
 
-    # Programar intervalo
-    schedule.every(SYNC_INTERVAL_MINUTES).minutes.do(fast_job)
+    # Repetir cada N minutos
+    schedule.every(SYNC_INTERVAL_MINUTES).minutes.do(ciclo)
 
     try:
         while True:
             schedule.run_pending()
             time.sleep(1)
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Servicio detenido por el usuario.{Style.RESET_ALL}")
+        print(f"\n{Fore.YELLOW}Bucle detenido por el usuario.{Style.RESET_ALL}")
+
 
 
 def main():

@@ -1,504 +1,326 @@
 """
-Motor de Sincronización Odoo 15 <-> WooCommerce
-Versión 2.0: Soporta envío directo al Plugin WordPress (REST API propia)
-además de la API nativa de WooCommerce.
+Motor de Sincronización Odoo 15 <-> WooCommerce  ·  v3.0
+─────────────────────────────────────────────────────────
+Bucle principal: Productos (crear + precio) + Stock + Imágenes
+Sin categorías, sin catálogo pesado.
 """
 
 import requests
 from odoo_client import OdooClient
 from woo_client import WooClient
-from config import ODOO_MATCH_FIELD, SYNC_ONLY_SALE_OK, SYNC_IMAGES, logger
+from config import ODOO_MATCH_FIELD, SYNC_ONLY_SALE_OK, logger
 import os
 
 
 class SyncEngine:
     def __init__(self):
         self.odoo = OdooClient()
-        self.woo = WooClient()
+        self.woo  = WooClient()
         self.match_field = ODOO_MATCH_FIELD
 
-        # Configuración opcional para enviar al Plugin WordPress directamente
-        self.woo_url = os.getenv("WOO_URL", "").rstrip("/")
+        # Plugin WordPress (opcional)
+        self.woo_url      = os.getenv("WOO_URL", "").rstrip("/")
         self.plugin_token = os.getenv("WOO_API_TOKEN", "")
-        self.use_plugin_api = bool(self.plugin_token)
+        self.use_plugin   = bool(self.plugin_token)
 
-    # ─── Cabeceras para el Plugin WordPress ─────────────────────────────────
-    def _plugin_headers(self):
-        return {
-            "X-Odoo-Token": self.plugin_token,
-            "Content-Type": "application/json"
-        }
+    # ── Helpers plugin ────────────────────────────────────────────────────────
+    def _ph(self):
+        return {"X-Odoo-Token": self.plugin_token, "Content-Type": "application/json"}
 
-    def _plugin_url(self, endpoint):
+    def _pu(self, endpoint):
         return f"{self.woo_url}/wp-json/odoo-sync/v1/{endpoint}"
 
-    # ─── Verificar estado del Plugin en WordPress ────────────────────────────
+    # ── Estado del plugin ─────────────────────────────────────────────────────
     def check_plugin_status(self):
-        if not self.use_plugin_api:
-            logger.warning("WOO_API_TOKEN no configurado. No se puede verificar el plugin de WordPress.")
+        if not self.use_plugin:
+            logger.warning("WOO_API_TOKEN no configurado.")
             return None
         try:
-            r = requests.get(self._plugin_url("status"), headers=self._plugin_headers(), timeout=10, verify=False)
+            r = requests.get(self._pu("status"), headers=self._ph(), timeout=10, verify=False)
             if r.status_code == 200:
-                data = r.json()
-                logger.info(f"Plugin WordPress conectado: {data.get('plugin')} v{data.get('version')} | WC {data.get('woocommerce_version')}")
-                logger.info(f"  Última sync productos : {data.get('last_sync_products')}")
-                logger.info(f"  Última sync stock     : {data.get('last_sync_stock')}")
-                logger.info(f"  Última sync pedidos   : {data.get('last_sync_orders')}")
-                return data
-            else:
-                logger.error(f"Plugin WordPress respondió con código {r.status_code}: {r.text[:200]}")
-                return None
+                d = r.json()
+                logger.info(f"Plugin: {d.get('plugin')} v{d.get('version')} | WC {d.get('woocommerce_version')}")
+                return d
+            logger.error(f"Plugin respondió {r.status_code}: {r.text[:200]}")
         except Exception as e:
-            logger.error(f"Error conectando al plugin WordPress: {e}")
-            return None
+            logger.error(f"Error conectando plugin: {e}")
+        return None
 
-    # ─── Sincronización de Productos (Odoo → Plugin WordPress → WooCommerce) ─
-    def sync_products(self, dry_run=False):
-        logger.info("=== Sincronizando Catálogo de Productos Odoo → WooCommerce ===")
+    # ══════════════════════════════════════════════════════════════════════════
+    #  BUCLE PRINCIPAL: Crear productos + Precio + Stock + Imágenes
+    # ══════════════════════════════════════════════════════════════════════════
+    def sync_full_loop(self, dry_run=False):
+        """
+        Un solo pase desde Odoo que hace TODO:
+          1. Crea productos nuevos en WooCommerce (si no existen por SKU)
+          2. Actualiza nombre y precio
+          3. Actualiza stock
+          4. Sube/actualiza la imagen principal
+        Sin categorías. Sin catálogo pesado.
+        """
+        logger.info("════ SYNC COMPLETO: Productos · Stock · Precio · Imágenes ════")
 
-        domain = [('sale_ok', '=', True)] if SYNC_ONLY_SALE_OK else []
-        # Traemos todos los productos almacenables, sin importar si tienen SKU o no.
-        domain.append(('type', '=', 'product'))
+        domain = [("type", "=", "product")]
+        if SYNC_ONLY_SALE_OK:
+            domain.append(("sale_ok", "=", True))
 
         odoo_products = self.odoo.get_products(domain=domain)
         logger.info(f"Odoo: {len(odoo_products)} productos encontrados.")
 
         if not odoo_products:
-            return {"status": "empty", "sent": 0}
+            return {"status": "empty"}
 
-        # Construir payload para el plugin
-        products_payload = []
+        payload = []
         for p in odoo_products:
-            alternate_field = 'barcode' if self.match_field == 'default_code' else 'default_code'
-            sku = str(p.get(self.match_field) or p.get(alternate_field) or "").strip()
-            
-            # Si el producto no tiene Referencia Interna ni Código de Barras, le damos uno automático
+            alt = "barcode" if self.match_field == "default_code" else "default_code"
+            sku = str(p.get(self.match_field) or p.get(alt) or "").strip()
             if not sku:
                 sku = f"ODOO-{p['id']}"
 
-            qty = p.get('free_qty') or p.get('qty_available', 0.0)
-            
-            # Use specific pricelist prices if available, fallback to list_price
-            base_price = p.get('public_price') or p.get('list_price', 0.0)
-            dist_price = p.get('ferretero_price') or p.get('list_price', 0.0)
+            qty        = p.get("free_qty") or p.get("qty_available", 0.0)
+            price_pub  = p.get("public_price")  or p.get("list_price", 0.0)
+            price_dist = p.get("ferretero_price") or p.get("list_price", 0.0)
+            image_b64  = p.get("image_1920") or p.get("image_128") or ""
 
-            # Imagen principal: preferir image_1920, sino image_128
-            image_b64 = p.get('image_1920') or p.get('image_128') or ''
-
-            item = {
-                "sku":          sku,
-                "name":         p.get('name', ''),
-                "price":        str(base_price),
-                "distributor_price": str(dist_price),
-                "description":  p.get('description_sale') or '',
-                "weight":       str(p.get('weight', '')) if p.get('weight') else '',
-                "manage_stock": True,
-                "stock":        int(max(0, qty)),
-                "category":     p.get('categ_id', [None, ''])[1] if p.get('categ_id') else '',
-                "image":        image_b64,   # base64 de la imagen principal de Odoo
-            }
-            products_payload.append(item)
-
-        logger.info(f"Preparados {len(products_payload)} productos para enviar.")
-
-        if dry_run:
-            logger.info("[DRY-RUN] No se enviaron datos al plugin WordPress.")
-            return {"status": "dry-run", "prepared": len(products_payload)}
-
-        # Enviar al Plugin WordPress (en lotes de 100)
-        if self.use_plugin_api:
-            return self._send_products_to_plugin(products_payload)
-        else:
-            # Fallback: usar API WooCommerce directamente
-            return self._sync_products_via_woo_api(products_payload)
-
-    def _send_products_to_plugin(self, products):
-        batch_size = 100
-        total_created = 0
-        total_updated = 0
-        total_errors = []
-
-        for i in range(0, len(products), batch_size):
-            chunk = products[i:i + batch_size]
-            try:
-                r = requests.post(
-                    self._plugin_url("push-products"),
-                    json={"products": chunk},
-                    headers=self._plugin_headers(),
-                    timeout=60,
-                    verify=False
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    total_created += data.get("created", 0)
-                    total_updated += data.get("updated", 0)
-                    total_errors.extend(data.get("errors", []))
-                    logger.info(f"Lote {i//batch_size + 1}: Creados={data.get('created')}, Actualizados={data.get('updated')}")
-                else:
-                    logger.error(f"Error enviando lote {i//batch_size + 1}: HTTP {r.status_code} — {r.text[:200]}")
-            except Exception as e:
-                logger.error(f"Excepción enviando lote {i//batch_size + 1}: {e}")
-
-        logger.info(f"Sync productos finalizada: {total_created} creados, {total_updated} actualizados.")
-        return {"created": total_created, "updated": total_updated, "errors": total_errors}
-
-    def _sync_products_via_woo_api(self, products_payload):
-        """Fallback: usar la API WooCommerce directamente si no hay token del plugin."""
-        woo_products_map = self.woo.get_all_products()
-        
-        # 1. Obtener/Crear categorías en WooCommerce
-        logger.info("Mapeando categorías en WooCommerce...")
-        wc_categories = {}
-        try:
-            res_cat = self.woo.api.get("products/categories", params={"per_page": 100})
-            if res_cat.status_code == 200:
-                for c in res_cat.json():
-                    wc_categories[c["name"].lower()] = c["id"]
-        except Exception as e:
-            logger.error(f"Error obteniendo categorías de Woo: {e}")
-
-        def get_or_create_category(cat_name):
-            if not cat_name:
-                return []
-            
-            # 1. Obtener el nombre original
-            parts = [p.strip() for p in cat_name.split('/')]
-            if len(parts) > 1 and parts[0].lower() in ['all', 'todos', 'almacenable', 'producto']:
-                original_name = parts[1].lower()
-            else:
-                original_name = parts[0].lower()
-
-            # 2. Diccionario Mágico: Agrupar 101 categorías en 8 Principales
-            MAPPING = {
-                "Materiales de Construcción": ["cemento", "ladrillo", "fierro", "acero", "calamina", "teja", "techo", "multiplaca", "puzolana", "tecnopor", "triplay", "tablero", "panel", "caja", "marco", "losa", "brea", "espaciador"],
-                "Herramientas Manuales": ["alicate", "azada", "barreta", "broca", "cizalla", "cincel", "comba", "disco", "escoba", "espatula", "flexometro", "hacha", "herramienta", "lampa", "lija", "lima", "pala", "pico", "rodillo", "brocha", "medidor", "balanza"],
-                "Ferretería General": ["alambre", "anillo", "candado", "carretilla", "cerradura", "clavo", "cadena", "soga", "hilo", "embalaje", "forte", "bizagra", "bisagra", "tapon"],
-                "Tuberías y Conexiones": ["tubo", "codo", "niple", "adaptador", "union", "tee", "valvula", "manguera", "accesorio"],
-                "Pinturas y Adhesivos": ["pintura", "barniz", "ocre", "temple", "imprimante", "pegamento", "silicona", "cinta", "sellante", "cola", "formador", "kreso"],
-                "Eléctricos e Iluminación": ["cable", "foco", "interruptor", "tomacorriente", "electrodo"],
-                "Baños y Grifería": ["llave", "lavadero", "mezcladora", "tanque", "ducha", "caño"],
-                "Seguridad Industrial": ["casco", "guante", "mascarilla", "traje"]
-            }
-
-            # 3. Buscar a qué categoría grande pertenece
-            clean_name = "Productos Diversos" # Por defecto
-            for main_category, keywords in MAPPING.items():
-                if any(kw in original_name for kw in keywords):
-                    clean_name = main_category
-                    break
-                
-            key = clean_name.lower()
-            if key in wc_categories:
-                return [{"id": wc_categories[key]}]
-            
-            # Crear si no existe (Silencioso para no ensuciar la consola)
-            try:
-                res = self.woo.api.post("products/categories", {"name": clean_name})
-                data = res.json()
-                if res.status_code in (200, 201):
-                    new_id = data.get("id")
-                    wc_categories[key] = new_id
-                    logger.info(f" -> Creada nueva macro-categoría: {clean_name}")
-                    return [{"id": new_id}]
-                elif res.status_code == 400 and data.get("code") == "term_exists":
-                    existing_id = data.get("data", {}).get("term_id")
-                    if existing_id:
-                        wc_categories[key] = existing_id
-                        return [{"id": existing_id}]
-            except Exception:
-                pass
-            return []
-
-        create_list = []
-        update_list = []
-
-        for p in products_payload:
-            sku = p["sku"]
-            payload = {
-                "name": p["name"], "type": "simple",
-                "regular_price": p["price"], "description": p["description"],
-                "sku": sku, "manage_stock": p["manage_stock"],
-                "categories": get_or_create_category(p.get("category", "")),
-                "weight": str(p.get("weight", "")),
-                "meta_data": [
-                    {
-                        "key": "_owc_distributor_price",
-                        "value": p.get("distributor_price", "")
-                    }
-                ]
-            }
-            if p["stock"] is not None:
-                payload["stock_quantity"] = p["stock"]
-
-            # ── Imagen principal: enviar como data-URI base64 ────────────────
-            image_b64 = p.get("image", "")
-            if image_b64:
-                data_uri = f"data:image/png;base64,{image_b64}"
-                payload["images"] = [{"src": data_uri, "position": 0}]
-
-            if sku in woo_products_map:
-                payload["id"] = woo_products_map[sku]["id"]
-                update_list.append(payload)
-            else:
-                create_list.append(payload)
-
-        results = self.woo.batch_update_products(create_items=create_list, update_items=update_list)
-        logger.info(f"Sync productos (API WooCommerce): {results['created']} creados, {results['updated']} actualizados.")
-        return results
-
-    # ─── Sincronización solo de Imágenes Odoo → WooCommerce ────────────────────
-    def sync_images_only(self, dry_run=False):
-        """Sincroniza únicamente las imágenes principales de productos Odoo → WooCommerce.
-        No modifica nombre, precio, stock ni ningún otro campo."""
-        logger.info("=== Sincronizando Imágenes de Productos Odoo → WooCommerce ===")
-
-        domain = [('type', '=', 'product')]
-        if SYNC_ONLY_SALE_OK:
-            domain.append(('sale_ok', '=', True))
-
-        # Traer solo los campos necesarios para ahorrar ancho de banda
-        odoo_products = self.odoo.get_products(
-            domain=domain,
-            fields=['id', 'default_code', 'barcode', 'name', 'image_1920', 'image_128', 'product_tmpl_id']
-        )
-        logger.info(f"Odoo: {len(odoo_products)} productos encontrados.")
-
-        if not odoo_products:
-            return {"status": "empty", "sent": 0}
-
-        images_payload = []
-        for p in odoo_products:
-            alternate_field = 'barcode' if self.match_field == 'default_code' else 'default_code'
-            sku = str(p.get(self.match_field) or p.get(alternate_field) or '').strip()
-            if not sku:
-                sku = f"ODOO-{p['id']}"
-
-            image_b64 = p.get('image_1920') or p.get('image_128') or ''
-            if not image_b64:
-                continue  # sin imagen en Odoo → omitir
-
-            images_payload.append({"sku": sku, "image": image_b64})
-
-        logger.info(f"Preparados {len(images_payload)} productos con imagen para enviar.")
-
-        if dry_run:
-            logger.info("[DRY-RUN] No se enviaron imágenes.")
-            return {"status": "dry-run", "prepared": len(images_payload)}
-
-        if self.use_plugin_api:
-            return self._send_images_to_plugin(images_payload)
-        else:
-            return self._sync_images_via_woo_api(images_payload)
-
-    def _send_images_to_plugin(self, images_payload):
-        """Envía solo imágenes al plugin WordPress reutilizando el endpoint push-products
-        con un payload mínimo (solo sku + image)."""
-        batch_size = 50  # lótes más pequeños: las imágenes son pesadas
-        total_updated = 0
-        total_errors = []
-
-        for i in range(0, len(images_payload), batch_size):
-            chunk = images_payload[i:i + batch_size]
-            try:
-                r = requests.post(
-                    self._plugin_url("push-products"),
-                    json={"products": chunk},
-                    headers=self._plugin_headers(),
-                    timeout=120,
-                    verify=False
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    total_updated += data.get("updated", 0) + data.get("created", 0)
-                    total_errors.extend(data.get("errors", []))
-                    logger.info(f"Imágenes lote {i//batch_size + 1}: {data.get('updated',0)} actualizadas, {data.get('created',0)} creadas")
-                else:
-                    logger.error(f"Error enviando imágenes lote {i//batch_size + 1}: HTTP {r.status_code} — {r.text[:200]}")
-            except Exception as e:
-                logger.error(f"Excepción enviando imágenes lote {i//batch_size + 1}: {e}")
-
-        logger.info(f"Sync de imágenes finalizada: {total_updated} actualizadas.")
-        return {"updated": total_updated, "errors": total_errors}
-
-    def _sync_images_via_woo_api(self, images_payload):
-        """Fallback: actualizar imagen directamente por API WooCommerce si no hay plugin."""
-        woo_products_map = self.woo.get_all_products()
-        update_list = []
-
-        for item in images_payload:
-            sku = item["sku"]
-            if sku not in woo_products_map:
-                continue
-            woo_id = woo_products_map[sku]["id"]
-            data_uri = f"data:image/png;base64,{item['image']}"
-            update_list.append({
-                "id": woo_id,
-                "images": [{"src": data_uri, "position": 0}]
+            payload.append({
+                "sku":               sku,
+                "name":              p.get("name", ""),
+                "price":             str(price_pub),
+                "distributor_price": str(price_dist),
+                "description":       p.get("description_sale") or "",
+                "weight":            str(p.get("weight", "")) if p.get("weight") else "",
+                "manage_stock":      True,
+                "stock":             int(max(0, qty)),
+                "image":             image_b64,
             })
 
-        if not update_list:
-            logger.info("Ningún producto con imagen encontrado en WooCommerce.")
-            return {"updated": 0}
-
-        results = self.woo.batch_update_products(update_items=update_list)
-        logger.info(f"Imágenes actualizadas (API WooCommerce): {results['updated']} productos.")
-        return results
-
-    # ─── Sincronización Rápida de Stock ─────────────────────────────────────
-    def sync_stock_only(self, dry_run=False):
-        logger.info("=== Sincronizando Stock/Inventario Odoo → WooCommerce ===")
-
-        stock_map = self.odoo.get_stock_quantities(match_field=self.match_field)
-        logger.info(f"Odoo: Existencias consultadas para {len(stock_map)} SKUs.")
+        logger.info(f"Preparados {len(payload)} productos.")
 
         if dry_run:
-            logger.info(f"[DRY-RUN] Se actualizarían {len(stock_map)} existencias en WooCommerce.")
-            return {"status": "dry-run", "pending": len(stock_map)}
+            logger.info("[DRY-RUN] Sin cambios reales.")
+            return {"status": "dry-run", "prepared": len(payload)}
 
-        if self.use_plugin_api:
-            return self._send_stock_to_plugin(stock_map)
+        if self.use_plugin:
+            return self._push_to_plugin(payload)
         else:
-            return self._sync_stock_via_woo_api(stock_map)
+            return self._push_via_woo_api(payload)
 
-    def _send_stock_to_plugin(self, stock_map):
-        stock_list = [{"sku": sku, "qty": info["qty"]} for sku, info in stock_map.items()]
-
-        batch_size = 200
+    # ── Envío al Plugin WordPress ─────────────────────────────────────────────
+    def _push_to_plugin(self, payload, batch_size=50):
+        """Lotes de 50 porque las imágenes base64 son pesadas."""
+        total_created = 0
         total_updated = 0
-        total_not_found = 0
+        total_errors  = []
 
-        for i in range(0, len(stock_list), batch_size):
-            chunk = stock_list[i:i + batch_size]
+        for i in range(0, len(payload), batch_size):
+            chunk = payload[i : i + batch_size]
+            lote  = i // batch_size + 1
             try:
                 r = requests.post(
-                    self._plugin_url("push-stock"),
-                    json={"stock": chunk},
-                    headers=self._plugin_headers(),
-                    timeout=60,
-                    verify=False
+                    self._pu("push-products"),
+                    json={"products": chunk},
+                    headers=self._ph(),
+                    timeout=120,
+                    verify=False,
                 )
                 if r.status_code == 200:
-                    data = r.json()
-                    total_updated   += data.get("updated", 0)
-                    total_not_found += data.get("not_found", 0)
-                    logger.info(f"Lote stock {i//batch_size + 1}: Actualizados={data.get('updated')}, No encontrados={data.get('not_found')}")
+                    d = r.json()
+                    total_created += d.get("created", 0)
+                    total_updated += d.get("updated", 0)
+                    total_errors.extend(d.get("errors", []))
+                    logger.info(
+                        f"Lote {lote}: Creados={d.get('created',0)}  "
+                        f"Actualizados={d.get('updated',0)}  "
+                        f"Omitidos={d.get('skipped',0)}"
+                    )
                 else:
-                    logger.error(f"Error enviando stock lote {i//batch_size + 1}: HTTP {r.status_code}")
+                    logger.error(f"Lote {lote} HTTP {r.status_code}: {r.text[:200]}")
             except Exception as e:
-                logger.error(f"Excepción enviando stock: {e}")
+                logger.error(f"Lote {lote} excepción: {e}")
 
-        logger.info(f"Sync stock finalizada: {total_updated} actualizados, {total_not_found} no encontrados en WooCommerce.")
-        return {"updated": total_updated, "not_found": total_not_found}
+        logger.info(f"════ FIN SYNC: {total_created} creados, {total_updated} actualizados ════")
+        return {"created": total_created, "updated": total_updated, "errors": total_errors}
 
-    def _sync_stock_via_woo_api(self, stock_map):
-        woo_products_map = self.woo.get_all_products()
-        stock_updates = []
-        for sku, info in stock_map.items():
-            if sku in woo_products_map:
-                woo_prod = woo_products_map[sku]
-                if woo_prod.get("stock_quantity") != info["qty"]:
-                    stock_updates.append({"id": woo_prod["id"], "manage_stock": True, "stock_quantity": info["qty"]})
+    # ── Fallback: API WooCommerce directa ─────────────────────────────────────
+    def _push_via_woo_api(self, payload):
+        """Usa la REST API de WooCommerce si no hay plugin configurado."""
+        woo_map    = self.woo.get_all_products()
+        create_lst = []
+        update_lst = []
 
-        if not stock_updates:
-            logger.info("El inventario en WooCommerce ya está al día.")
-            return {"status": "up-to-date", "updated": 0}
+        for p in payload:
+            sku = p["sku"]
+            item = {
+                "name":           p["name"],
+                "type":           "simple",
+                "regular_price":  p["price"],
+                "description":    p["description"],
+                "sku":            sku,
+                "manage_stock":   p["manage_stock"],
+                "stock_quantity": p["stock"],
+                "weight":         p.get("weight", ""),
+                "meta_data": [
+                    {"key": "_owc_distributor_price", "value": p.get("distributor_price", "")}
+                ],
+            }
+            if p.get("image"):
+                item["images"] = [{"src": f"data:image/png;base64,{p['image']}", "position": 0}]
 
-        results = self.woo.batch_update_stock(stock_updates)
-        logger.info(f"Stock actualizado (API WooCommerce): {results['updated']} productos.")
+            if sku in woo_map:
+                item["id"] = woo_map[sku]["id"]
+                update_lst.append(item)
+            else:
+                create_lst.append(item)
+
+        results = self.woo.batch_update_products(create_items=create_lst, update_items=update_lst)
+        logger.info(f"════ FIN SYNC (API Woo): {results['created']} creados, {results['updated']} actualizados ════")
         return results
 
-    # ─── Importar Pedidos de WooCommerce → Odoo ──────────────────────────────
-    def sync_orders_to_odoo(self, dry_run=False):
-        logger.info("=== Importando Pedidos de WooCommerce → Odoo ===")
+    # ══════════════════════════════════════════════════════════════════════════
+    #  STOCK RÁPIDO  (solo inventario)
+    # ══════════════════════════════════════════════════════════════════════════
+    def sync_stock_only(self, dry_run=False):
+        logger.info("═══ Sincronizando Stock Odoo → WooCommerce ═══")
+        stock_map = self.odoo.get_stock_quantities(match_field=self.match_field)
+        logger.info(f"Odoo: {len(stock_map)} SKUs con stock.")
 
-        orders = self.woo.get_orders(status="processing")
-        logger.info(f"WooCommerce: {len(orders)} pedidos en estado 'processing'.")
+        if dry_run:
+            return {"status": "dry-run", "pending": len(stock_map)}
+
+        if self.use_plugin:
+            return self._stock_to_plugin(stock_map)
+        return self._stock_via_woo_api(stock_map)
+
+    def _stock_to_plugin(self, stock_map):
+        stock_list = [{"sku": s, "qty": i["qty"]} for s, i in stock_map.items()]
+        batch_size = 200
+        total_upd  = 0
+        total_nf   = 0
+
+        for i in range(0, len(stock_list), batch_size):
+            chunk = stock_list[i : i + batch_size]
+            try:
+                r = requests.post(
+                    self._pu("push-stock"),
+                    json={"stock": chunk},
+                    headers=self._ph(),
+                    timeout=60,
+                    verify=False,
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    total_upd += d.get("updated", 0)
+                    total_nf  += d.get("not_found", 0)
+                    logger.info(f"Stock lote {i//batch_size+1}: Actualizados={d.get('updated')}  No-encontrados={d.get('not_found')}")
+                else:
+                    logger.error(f"Stock lote {i//batch_size+1} HTTP {r.status_code}")
+            except Exception as e:
+                logger.error(f"Stock excepción: {e}")
+
+        logger.info(f"Stock finalizado: {total_upd} actualizados, {total_nf} no encontrados.")
+        return {"updated": total_upd, "not_found": total_nf}
+
+    def _stock_via_woo_api(self, stock_map):
+        woo_map = self.woo.get_all_products()
+        updates = [
+            {"id": woo_map[s]["id"], "manage_stock": True, "stock_quantity": i["qty"]}
+            for s, i in stock_map.items()
+            if s in woo_map and woo_map[s].get("stock_quantity") != i["qty"]
+        ]
+        if not updates:
+            logger.info("Stock ya al día en WooCommerce.")
+            return {"status": "up-to-date", "updated": 0}
+        res = self.woo.batch_update_stock(updates)
+        logger.info(f"Stock actualizado (API Woo): {res['updated']} productos.")
+        return res
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PEDIDOS WooCommerce → Odoo
+    # ══════════════════════════════════════════════════════════════════════════
+    def sync_orders_to_odoo(self, dry_run=False):
+        logger.info("═══ Importando Pedidos WooCommerce → Odoo ═══")
+        orders   = self.woo.get_orders(status="processing")
+        logger.info(f"WooCommerce: {len(orders)} pedidos en 'processing'.")
 
         imported = 0
         for order in orders:
-            order_id = order.get("id")
+            oid = order.get("id")
             if dry_run:
-                logger.info(f"[DRY-RUN] Pedido #{order_id} sería creado en Odoo.")
+                logger.info(f"[DRY-RUN] Pedido #{oid} sería creado en Odoo.")
                 imported += 1
                 continue
-
-            sale_id = self.odoo.create_sale_order(order, match_field=self.match_field)
-            if sale_id:
+            if self.odoo.create_sale_order(order, match_field=self.match_field):
                 imported += 1
 
-        logger.info(f"Pedidos procesados: {imported}/{len(orders)}.")
+        logger.info(f"Pedidos: {imported}/{len(orders)} importados.")
         return {"imported": imported, "total": len(orders)}
 
-    # ─── Sincronizar Cancelaciones Odoo → WooCommerce ────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    #  CANCELACIONES Odoo → WooCommerce
+    # ══════════════════════════════════════════════════════════════════════════
     def sync_cancellations_to_woo(self, dry_run=False):
-        logger.info("=== Sincronizando Cancelaciones Odoo → WooCommerce ===")
-
-        # 1. Buscar en Odoo todos los pedidos cancelados con referencia WooCommerce
-        cancelled_odoo = self.odoo.execute_kw(
-            'sale.order',
-            'search_read',
-            [('state', '=', 'cancel'), ('client_order_ref', 'like', 'WOO-')],
-            fields=['id', 'name', 'client_order_ref', 'state']
+        logger.info("═══ Sincronizando Cancelaciones Odoo → WooCommerce ═══")
+        cancelled = self.odoo.execute_kw(
+            "sale.order", "search_read",
+            [("state", "=", "cancel"), ("client_order_ref", "like", "WOO-")],
+            fields=["id", "name", "client_order_ref", "state"],
         )
-
-        if not cancelled_odoo:
-            logger.info("No hay pedidos cancelados en Odoo con referencia WooCommerce.")
+        if not cancelled:
+            logger.info("Sin pedidos cancelados con referencia WooCommerce.")
             return {"cancelled": 0}
 
-        logger.info(f"Odoo: {len(cancelled_odoo)} pedidos cancelados con referencia WooCommerce.")
-
-        cancelled_count = 0
-        for order in cancelled_odoo:
-            ref = order.get('client_order_ref', '')
-            # Extraer el ID de WooCommerce (WOO-12345 → 12345)
-            if not ref.startswith('WOO-'):
+        logger.info(f"Odoo: {len(cancelled)} cancelados con ref WooCommerce.")
+        count = 0
+        for order in cancelled:
+            ref    = order.get("client_order_ref", "")
+            woo_id = ref.replace("WOO-", "").strip()
+            if not ref.startswith("WOO-"):
                 continue
-            woo_id = ref.replace('WOO-', '').strip()
-
             if dry_run:
-                logger.info(f"[DRY-RUN] Orden Woo #{woo_id} ({order['name']}) sería cancelada en WooCommerce.")
-                cancelled_count += 1
+                logger.info(f"[DRY-RUN] Woo #{woo_id} ({order['name']}) sería cancelado.")
+                count += 1
                 continue
-
-            # 2. Consultar estado actual en WooCommerce
             try:
                 res = self.woo.api.get(f"orders/{woo_id}")
                 if res.status_code != 200:
-                    logger.warning(f"Orden Woo #{woo_id} no encontrada (HTTP {res.status_code}).")
+                    logger.warning(f"Orden Woo #{woo_id} no encontrada ({res.status_code}).")
                     continue
-
-                woo_order = res.json()
-                woo_status = woo_order.get('status', '')
-
-                # Solo cancelar si no está ya cancelada o completada
-                if woo_status in ('cancelled', 'refunded', 'completed'):
-                    logger.info(f"Orden Woo #{woo_id} ya está en estado '{woo_status}'. Omitiendo.")
+                status = res.json().get("status", "")
+                if status in ("cancelled", "refunded", "completed"):
+                    logger.info(f"Woo #{woo_id} ya en '{status}'. Omitido.")
                     continue
-
-                # 3. Actualizar estado en WooCommerce a 'cancelled'
                 upd = self.woo.api.put(f"orders/{woo_id}", data={"status": "cancelled"})
                 if upd.status_code == 200:
-                    logger.info(f"✅ Orden Woo #{woo_id} ({order['name']}) cancelada correctamente en WooCommerce.")
-                    cancelled_count += 1
+                    logger.info(f"Woo #{woo_id} ({order['name']}) cancelado.")
+                    count += 1
                 else:
-                    logger.error(f"❌ Error al cancelar Woo #{woo_id}: HTTP {upd.status_code} — {upd.text[:150]}")
-
+                    logger.error(f"Error cancelando Woo #{woo_id}: {upd.status_code}")
             except Exception as e:
                 logger.error(f"Excepción cancelando Woo #{woo_id}: {e}")
 
-        logger.info(f"Cancelaciones sincronizadas: {cancelled_count}/{len(cancelled_odoo)}.")
-        return {"cancelled": cancelled_count}
+        logger.info(f"Cancelaciones: {count}/{len(cancelled)}.")
+        return {"cancelled": count}
 
-    # ─── Sincronización Total ────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    #  SYNC_ALL: Full loop + Pedidos + Cancelaciones
+    # ══════════════════════════════════════════════════════════════════════════
     def sync_all(self, dry_run=False):
         """
-        Sincronización rutinaria: Stock + Pedidos + Cancelaciones.
-        El catálogo completo (nombre/precio) está DESACTIVADO porque ya fue importado.
-          → Usa  python main.py --sync-products  si necesitas forzar el catálogo.
-          → Usa  python main.py --sync-images    para actualizar solo las imágenes.
+        Ciclo completo para el demonio:
+          1. sync_full_loop  → Crear/actualizar productos + precio + stock + imágenes
+          2. sync_orders     → Pedidos WooCommerce → Odoo
+          3. sync_cancel     → Cancelaciones Odoo → WooCommerce
         """
-        res_stock   = self.sync_stock_only(dry_run=dry_run)
-        res_orders  = self.sync_orders_to_odoo(dry_run=dry_run)
-        res_cancel  = self.sync_cancellations_to_woo(dry_run=dry_run)
-        return {"stock": res_stock, "orders": res_orders, "cancellations": res_cancel}
+        res_full   = self.sync_full_loop(dry_run=dry_run)
+        res_orders = self.sync_orders_to_odoo(dry_run=dry_run)
+        res_cancel = self.sync_cancellations_to_woo(dry_run=dry_run)
+        return {"full_sync": res_full, "orders": res_orders, "cancellations": res_cancel}
+
+    # ── Alias CLI (compatibilidad) ────────────────────────────────────────────
+    def sync_products(self, dry_run=False):
+        """Alias → sync_full_loop."""
+        return self.sync_full_loop(dry_run=dry_run)
+
+    def sync_images_only(self, dry_run=False):
+        """Alias → sync_full_loop (imágenes incluidas en cada ciclo)."""
+        return self.sync_full_loop(dry_run=dry_run)
