@@ -80,9 +80,12 @@ class SyncEngine:
             qty        = p.get("free_qty") or p.get("qty_available", 0.0)
             price_pub  = p.get("public_price")  or p.get("list_price", 0.0)
             price_dist = p.get("ferretero_price") or p.get("list_price", 0.0)
-            image_b64  = p.get("image_1920") or p.get("image_128") or ""
+            
+            # Usamos image_128 solo como bandera booleana para saber si hay imagen en Odoo
+            has_image = bool(p.get("image_128"))
 
             payload.append({
+                "odoo_id":           p["id"],
                 "sku":               sku,
                 "name":              p.get("name", ""),
                 "price":             str(price_pub),
@@ -91,7 +94,7 @@ class SyncEngine:
                 "weight":            str(p.get("weight", "")) if p.get("weight") else "",
                 "manage_stock":      True,
                 "stock":             int(max(0, qty)),
-                "image":             image_b64,
+                "has_image":         has_image,
             })
 
         logger.info(f"Preparados {len(payload)} productos.")
@@ -143,15 +146,17 @@ class SyncEngine:
 
     # ── Fallback: API WooCommerce directa ─────────────────────────────────────
     def _push_via_woo_api(self, payload):
-        """Usa la REST API de WooCommerce si no hay plugin configurado.
-        Las imágenes se suben a la Biblioteca de Medios de WP para obtener
-        una URL real (WooCommerce NO acepta base64 directo).
+        """Usa la REST API de WooCommerce directa.
+        Para las imágenes, enviamos la URL pública de Odoo para que WooCommerce
+        la descargue automáticamente.
         """
-        import hashlib
         woo_map    = self.woo.get_all_products()
         create_lst = []
         update_lst = []
-        imgs_up = imgs_cached = imgs_skip = 0
+        imgs_set   = 0
+        imgs_skip  = 0
+        
+        odoo_base_url = self.odoo.url.rstrip("/")
 
         for p in payload:
             sku = p["sku"]
@@ -169,23 +174,33 @@ class SyncEngine:
                 ],
             }
 
-            # ── Imagen: subir a WP Media Library → usar URL real ──────────────
-            image_b64 = p.get("image", "")
-            if image_b64:
-                img_hash = hashlib.md5(image_b64.encode()).hexdigest()
-                cached   = self.woo._image_cache.get(sku)
-                if cached and cached[0] == img_hash:
-                    # Sin cambios → reutilizar URL del caché
-                    item["images"] = [{"src": cached[1], "position": 0}]
-                    imgs_cached += 1
-                else:
-                    # Nueva o modificada → subir
-                    url = self.woo.upload_media_from_base64(image_b64, sku)
-                    if url:
-                        item["images"] = [{"src": url, "position": 0}]
-                        imgs_up += 1
+            # ── Lógica de Imágenes (URL directa a Odoo) ──────────────
+            if p.get("has_image"):
+                # URL pública de Odoo para la imagen de este producto
+                odoo_img_url = f"{odoo_base_url}/web/image/product.product/{p['odoo_id']}/image_1920"
+                
+                if sku in woo_map:
+                    # Si ya existe en Woo, verificar si ya tiene imagen
+                    woo_prod = woo_map[sku]
+                    woo_images = woo_prod.get("images", [])
+                    has_woo_img = False
+                    
+                    if woo_images:
+                        # WooCommerce a veces pone un placeholder. Si es un placeholder, lo ignoramos.
+                        src = woo_images[0].get("src", "")
+                        if "woocommerce-placeholder" not in src:
+                            has_woo_img = True
+                    
+                    if not has_woo_img:
+                        item["images"] = [{"src": odoo_img_url, "position": 0}]
+                        imgs_set += 1
                     else:
+                        # Ya tiene imagen, no la re-enviamos para evitar duplicados en la Biblioteca de WP
                         imgs_skip += 1
+                else:
+                    # Producto nuevo, le mandamos la imagen
+                    item["images"] = [{"src": odoo_img_url, "position": 0}]
+                    imgs_set += 1
             else:
                 imgs_skip += 1
 
@@ -196,10 +211,10 @@ class SyncEngine:
                 create_lst.append(item)
 
         logger.info(
-            f"Imágenes → Subidas: {imgs_up}  "
-            f"Caché (sin cambios): {imgs_cached}  "
-            f"Sin imagen: {imgs_skip}"
+            f"Imágenes → URL enviada a Woo para descarga: {imgs_set} | "
+            f"Omitidas (ya tenían imagen o sin imagen en Odoo): {imgs_skip}"
         )
+        
         results = self.woo.batch_update_products(create_items=create_lst, update_items=update_lst)
         logger.info(
             f"════ FIN SYNC (API Woo): {results['created']} creados, "
