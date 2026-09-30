@@ -32,19 +32,31 @@ def run_daemon(engine, dry_run=False):
     print(f"Sincronizando stock A Mano y pedidos cada {SYNC_INTERVAL_MINUTES} minutos...")
     print("Presiona Ctrl + C para detener el servicio.\n")
 
-    def job():
-        logger.info("--- Ejecutando tarea programada del demonio ---")
+    def fast_job():
+        logger.info("--- Ejecutando tarea rápida (Stock, Pedidos, Cancelaciones) ---")
         try:
-            # Ejecutar sincronización completa (Productos, Stock, Pedidos, Cancelaciones)
-            engine.sync_all(dry_run=dry_run)
+            engine.sync_stock_only(dry_run=dry_run)
+            engine.sync_orders_to_odoo(dry_run=dry_run)
+            engine.sync_cancellations_to_woo(dry_run=dry_run)
         except Exception as e:
-            logger.error(f"Error en tarea periódica: {e}")
+            logger.error(f"Error en tarea rápida: {e}")
 
-    # Ejecutar una vez al inicio
-    job()
+    def heavy_job():
+        logger.info("--- Ejecutando tarea pesada (Catálogo completo de Productos) ---")
+        try:
+            engine.sync_products(dry_run=dry_run)
+        except Exception as e:
+            logger.error(f"Error en tarea pesada: {e}")
 
-    # Programar intervalos cada 10 segundos (ultra rápido)
-    schedule.every(10).seconds.do(job)
+    # Al iniciar, correr ambas
+    heavy_job()
+    fast_job()
+
+    # Programar intervalos
+    # Lo rápido (Stock y Pedidos) cada 10 segundos
+    schedule.every(10).seconds.do(fast_job)
+    # Lo pesado (Catálogo de 815 productos) cada 60 minutos (para no tumbar el servidor)
+    schedule.every(60).minutes.do(heavy_job)
 
     try:
         while True:
