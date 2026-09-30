@@ -82,6 +82,7 @@ class SyncEngine:
             price_dist = p.get("ferretero_price") or p.get("list_price", 0.0)
             
             image_b64  = p.get("image_1920") or p.get("image_128") or ""
+            status_woo = "publish" if p.get("active", True) else "draft"
 
             payload.append({
                 "odoo_id":           p["id"],
@@ -94,6 +95,7 @@ class SyncEngine:
                 "manage_stock":      True,
                 "stock":             int(max(0, qty)),
                 "image_b64":         image_b64,
+                "status":            status_woo,
             })
 
         logger.info(f"Preparados {len(payload)} productos.")
@@ -160,6 +162,7 @@ class SyncEngine:
             item = {
                 "name":           p["name"],
                 "type":           "simple",
+                "status":         p.get("status", "publish"),
                 "regular_price":  p["price"],
                 "description":    p["description"],
                 "sku":            sku,

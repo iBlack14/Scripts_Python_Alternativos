@@ -73,7 +73,8 @@ class OdooClient:
         Obtiene productos desde Odoo (product.product).
         """
         if domain is None:
-            domain = [('sale_ok', '=', True)]
+            # Traer productos activos e inactivos (archivados)
+            domain = [('sale_ok', '=', True), '|', ('active', '=', True), ('active', '=', False)]
         
         if fields is None:
             fields = [
