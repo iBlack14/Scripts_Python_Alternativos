@@ -64,7 +64,7 @@ class SyncEngine:
         if SYNC_ONLY_SALE_OK:
             domain.append(("sale_ok", "=", True))
 
-        odoo_products = self.odoo.get_products(domain=domain)
+        odoo_products = self.odoo.get_products(domain=domain, include_archived=True)
         logger.info(f"Odoo: {len(odoo_products)} productos encontrados.")
 
         if not odoo_products:

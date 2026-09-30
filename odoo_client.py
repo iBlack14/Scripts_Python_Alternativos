@@ -68,7 +68,7 @@ class OdooClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def get_products(self, domain=None, fields=None, limit=0, offset=0):
+    def get_products(self, domain=None, fields=None, limit=0, offset=0, include_archived=False):
         """
         Obtiene productos desde Odoo (product.product).
         """
@@ -98,13 +98,15 @@ class OdooClient:
             ]
         
         try:
+            context = {'active_test': False} if include_archived else {}
             products = self.execute_kw(
                 'product.product',
                 'search_read',
                 domain,
                 fields=fields,
                 offset=offset,
-                limit=limit
+                limit=limit,
+                context=context,
             )
 
             if products:
