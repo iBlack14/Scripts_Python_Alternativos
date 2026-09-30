@@ -253,9 +253,70 @@ class SyncEngine:
         logger.info(f"Pedidos procesados: {imported}/{len(orders)}.")
         return {"imported": imported, "total": len(orders)}
 
+    # ─── Sincronizar Cancelaciones Odoo → WooCommerce ────────────────────────
+    def sync_cancellations_to_woo(self, dry_run=False):
+        logger.info("=== Sincronizando Cancelaciones Odoo → WooCommerce ===")
+
+        # 1. Buscar en Odoo todos los pedidos cancelados con referencia WooCommerce
+        cancelled_odoo = self.odoo.execute_kw(
+            'sale.order',
+            'search_read',
+            [('state', '=', 'cancel'), ('client_order_ref', 'like', 'WOO-')],
+            fields=['id', 'name', 'client_order_ref', 'state']
+        )
+
+        if not cancelled_odoo:
+            logger.info("No hay pedidos cancelados en Odoo con referencia WooCommerce.")
+            return {"cancelled": 0}
+
+        logger.info(f"Odoo: {len(cancelled_odoo)} pedidos cancelados con referencia WooCommerce.")
+
+        cancelled_count = 0
+        for order in cancelled_odoo:
+            ref = order.get('client_order_ref', '')
+            # Extraer el ID de WooCommerce (WOO-12345 → 12345)
+            if not ref.startswith('WOO-'):
+                continue
+            woo_id = ref.replace('WOO-', '').strip()
+
+            if dry_run:
+                logger.info(f"[DRY-RUN] Orden Woo #{woo_id} ({order['name']}) sería cancelada en WooCommerce.")
+                cancelled_count += 1
+                continue
+
+            # 2. Consultar estado actual en WooCommerce
+            try:
+                res = self.woo.api.get(f"orders/{woo_id}")
+                if res.status_code != 200:
+                    logger.warning(f"Orden Woo #{woo_id} no encontrada (HTTP {res.status_code}).")
+                    continue
+
+                woo_order = res.json()
+                woo_status = woo_order.get('status', '')
+
+                # Solo cancelar si no está ya cancelada o completada
+                if woo_status in ('cancelled', 'refunded', 'completed'):
+                    logger.info(f"Orden Woo #{woo_id} ya está en estado '{woo_status}'. Omitiendo.")
+                    continue
+
+                # 3. Actualizar estado en WooCommerce a 'cancelled'
+                upd = self.woo.api.put(f"orders/{woo_id}", data={"status": "cancelled"})
+                if upd.status_code == 200:
+                    logger.info(f"✅ Orden Woo #{woo_id} ({order['name']}) cancelada correctamente en WooCommerce.")
+                    cancelled_count += 1
+                else:
+                    logger.error(f"❌ Error al cancelar Woo #{woo_id}: HTTP {upd.status_code} — {upd.text[:150]}")
+
+            except Exception as e:
+                logger.error(f"Excepción cancelando Woo #{woo_id}: {e}")
+
+        logger.info(f"Cancelaciones sincronizadas: {cancelled_count}/{len(cancelled_odoo)}.")
+        return {"cancelled": cancelled_count}
+
     # ─── Sincronización Total ────────────────────────────────────────────────
     def sync_all(self, dry_run=False):
-        res_prod   = self.sync_products(dry_run=dry_run)
-        res_stock  = self.sync_stock_only(dry_run=dry_run)
-        res_orders = self.sync_orders_to_odoo(dry_run=dry_run)
-        return {"products": res_prod, "stock": res_stock, "orders": res_orders}
+        res_prod        = self.sync_products(dry_run=dry_run)
+        res_stock       = self.sync_stock_only(dry_run=dry_run)
+        res_orders      = self.sync_orders_to_odoo(dry_run=dry_run)
+        res_cancel      = self.sync_cancellations_to_woo(dry_run=dry_run)
+        return {"products": res_prod, "stock": res_stock, "orders": res_orders, "cancellations": res_cancel}
