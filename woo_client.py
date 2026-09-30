@@ -7,7 +7,7 @@ from woocommerce import API
 import requests
 import base64
 import hashlib
-from config import WOO_URL, WOO_CONSUMER_KEY, WOO_CONSUMER_SECRET, WOO_VERSION, WOO_VERIFY_SSL, logger
+from config import WOO_URL, WOO_CONSUMER_KEY, WOO_CONSUMER_SECRET, WOO_VERSION, WOO_VERIFY_SSL, WP_USER, WP_APP_PASSWORD, logger
 
 
 class WooClient:
@@ -75,9 +75,13 @@ class WooClient:
 
         filename = f"odoo-{sku.replace('/', '-')}.{ext}"
 
-        # 4. Credenciales Basic Auth: consumer_key:consumer_secret
+        # 4. Credenciales Basic Auth: WP_USER:WP_APP_PASSWORD
+        if not WP_USER or not WP_APP_PASSWORD:
+            logger.warning(f"[IMG] Faltan WP_USER y WP_APP_PASSWORD en .env para subir imágenes a WordPress.")
+            return ''
+
         creds = base64.b64encode(
-            f"{self.consumer_key}:{self.consumer_secret}".encode()
+            f"{WP_USER}:{WP_APP_PASSWORD}".encode()
         ).decode()
 
         media_url = f"{self.url}/wp-json/wp/v2/media"

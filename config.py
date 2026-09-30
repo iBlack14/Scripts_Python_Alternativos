@@ -35,6 +35,10 @@ WOO_CONSUMER_SECRET = os.getenv("WOO_CONSUMER_SECRET", "")
 WOO_VERSION = os.getenv("WOO_VERSION", "wc/v3")
 WOO_VERIFY_SSL = os.getenv("WOO_VERIFY_SSL", "True").lower() in ("true", "1", "yes")
 
+# WordPress Rest API Auth (para subir imágenes si no se usa el plugin)
+WP_USER = os.getenv("WP_USER", "")
+WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
+
 # Sync Settings
 ODOO_MATCH_FIELD = os.getenv("ODOO_MATCH_FIELD", "default_code")  # 'default_code' o 'barcode'
 SYNC_ONLY_SALE_OK = os.getenv("SYNC_ONLY_SALE_OK", "True").lower() in ("true", "1", "yes")
