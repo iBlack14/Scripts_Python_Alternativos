@@ -310,6 +310,37 @@ class OdooClient:
                 'name': line.get('name', 'Producto')
             }))
 
+        # Línea independiente para el flete/método de envío de WooCommerce.
+        shipping_lines = woo_order.get('shipping_lines', [])
+        if shipping_lines:
+            ship_products = self.execute_kw(
+                'product.product',
+                'search_read',
+                [('default_code', '=', 'WOO-SHIPPING')],
+                fields=['id'],
+                limit=1
+            )
+            if ship_products:
+                shipping_product_id = ship_products[0]['id']
+            else:
+                shipping_product_id = self.execute_kw('product.product', 'create', {
+                    'name': 'Flete / Envío WooCommerce',
+                    'default_code': 'WOO-SHIPPING',
+                    'type': 'service',
+                    'sale_ok': True,
+                    'purchase_ok': False,
+                    'list_price': 0.0,
+                })
+
+            for shipping in shipping_lines:
+                method_title = shipping.get('method_title') or 'Envío WooCommerce'
+                order_lines.append((0, 0, {
+                    'product_id': shipping_product_id,
+                    'product_uom_qty': 1.0,
+                    'price_unit': float(shipping.get('total', 0.0)),
+                    'name': f'Flete: {method_title}',
+                }))
+
         if not order_lines:
             logger.error(f"No se pudieron emparejar productos para la orden Woo #{woo_order_id}")
             return False
