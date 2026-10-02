@@ -30,8 +30,8 @@ def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
     print(f"\n{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL}")
     print(f"Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL}  "
-          f"→  Productos + Stock + Precio + Imágenes + Pedidos")
-    print(f"{Fore.YELLOW}Sin categorías. Sin catálogo pesado.{Style.RESET_ALL}")
+          f"→  Categorías + Productos + Stock + Precio + Imágenes + Pedidos")
+    print(f"{Fore.YELLOW}Árbol de categorías Odoo activo; elimina categorías fantasma en WooCommerce.{Style.RESET_ALL}")
     print("Presiona Ctrl + C para detener.\n")
 
     def ciclo():

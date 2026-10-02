@@ -152,6 +152,20 @@ class OdooClient:
             logger.error(f"Error obteniendo productos de Odoo: {e}")
             return []
 
+    def get_product_categories(self):
+        """Obtiene el árbol completo de categorías, incluidas las ramas vacías."""
+        try:
+            return self.execute_kw(
+                'product.category',
+                'search_read',
+                [],
+                fields=['id', 'name', 'parent_id'],
+                context={'active_test': False},
+            ) or []
+        except Exception as e:
+            logger.error(f"Error obteniendo categorías de Odoo: {e}")
+            return []
+
     def get_product_images(self, product_ids):
         """Obtiene las imágenes en base64 de los productos especificados."""
         try:

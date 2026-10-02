@@ -1,8 +1,8 @@
 """
-Motor de Sincronización Odoo 15 <-> WooCommerce  ·  v3.1
+Motor de Sincronización Odoo 15 <-> WooCommerce  ·  v4.0
 ─────────────────────────────────────────────────────────
 Bucle principal: Productos (crear + precio) + Stock + Imágenes
-Sin categorías, sin catálogo pesado.
+Incluye jerarquía completa de categorías y limpieza de categorías fantasma.
 """
 
 import requests
@@ -64,6 +64,39 @@ class SyncEngine:
         if SYNC_ONLY_SALE_OK:
             domain.append(("sale_ok", "=", True))
 
+        odoo_categories = self.odoo.get_product_categories()
+        if not odoo_categories:
+            logger.error("Odoo no devolvió categorías. Se cancela para evitar una limpieza incorrecta.")
+            return {"status": "error", "error": "No se pudieron obtener las categorías de Odoo."}
+
+        category_map = {int(c["id"]): c for c in odoo_categories if c.get("id") and c.get("name")}
+        category_paths = {}
+
+        def category_path(category_id, visiting=None):
+            category_id = int(category_id or 0)
+            if category_id in category_paths:
+                return category_paths[category_id]
+            visiting = visiting or set()
+            if category_id in visiting or category_id not in category_map:
+                return []
+            visiting.add(category_id)
+            row = category_map[category_id]
+            parent = row.get("parent_id")
+            path = category_path(parent[0], visiting) if isinstance(parent, (list, tuple)) and parent else []
+            name = str(row.get("name") or "").strip()
+            if name.lower() not in ("", "all", "todas"):
+                path = path + [name]
+            category_paths[category_id] = path
+            return path
+
+        for category_id in category_map:
+            category_path(category_id)
+
+        if self.use_plugin and not dry_run:
+            category_result = self._push_categories_to_plugin(odoo_categories)
+            if not category_result.get("success"):
+                return {"status": "error", "error": category_result.get("error", "Falló la sincronización de categorías.")}
+
         odoo_products = self.odoo.get_products(domain=domain, include_archived=True)
         logger.info(f"Odoo: {len(odoo_products)} productos encontrados.")
 
@@ -87,7 +120,9 @@ class SyncEngine:
             status_woo = "publish" if p.get("active", True) else "draft"
 
             categ = p.get("categ_id", [None, ""])
-            category_name = categ[1] if isinstance(categ, (list, tuple)) and len(categ) > 1 else ""
+            category_id = categ[0] if isinstance(categ, (list, tuple)) and categ else 0
+            path = category_paths.get(int(category_id or 0), [])
+            category_name = " / ".join(path)
 
             payload.append({
                 "odoo_id":           p["id"],
@@ -114,6 +149,35 @@ class SyncEngine:
             return self._push_to_plugin(payload)
         else:
             return self._push_via_woo_api(payload)
+
+    def _push_categories_to_plugin(self, categories):
+        """Envía el árbol completo; WordPress crea ramas y elimina fantasmas."""
+        payload = []
+        for category in categories:
+            parent = category.get("parent_id")
+            payload.append({
+                "id": int(category["id"]),
+                "name": str(category.get("name") or "").strip(),
+                "parent_id": int(parent[0]) if isinstance(parent, (list, tuple)) and parent else 0,
+            })
+        try:
+            response = requests.post(
+                self._pu("push-categories"),
+                json={"categories": payload, "delete_missing": True},
+                headers=self._ph(), timeout=120, verify=False,
+            )
+            if response.status_code != 200:
+                logger.error(f"Categorías HTTP {response.status_code}: {response.text[:400]}")
+                return {"success": False, "error": response.text[:400]}
+            result = response.json()
+            logger.info(
+                f"Categorías: {result.get('synced', 0)} sincronizadas, "
+                f"{result.get('removed', 0)} fantasmas eliminadas."
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error enviando categorías al plugin: {e}")
+            return {"success": False, "error": str(e)}
 
     # ── Envío al Plugin WordPress ──────────────────────────────────────────────
     def _push_to_plugin(self, payload):
