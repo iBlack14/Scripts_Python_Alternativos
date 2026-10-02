@@ -56,7 +56,7 @@ class SyncEngine:
           2. Actualiza nombre y precio
           3. Actualiza stock
           4. Sube/actualiza la imagen principal
-        Sin categorías. Sin catálogo pesado.
+        Incluye categorías jerárquicas y limpieza segura de categorías fantasma.
         """
         logger.info("════ SYNC COMPLETO: Productos · Stock · Precio · Imágenes ════")
 
