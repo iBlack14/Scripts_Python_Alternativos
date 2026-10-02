@@ -86,6 +86,9 @@ class SyncEngine:
             image_b64  = p.get("image_1920") or p.get("image_128") or ""
             status_woo = "publish" if p.get("active", True) else "draft"
 
+            categ = p.get("categ_id", [None, ""])
+            category_name = categ[1] if isinstance(categ, (list, tuple)) and len(categ) > 1 else ""
+
             payload.append({
                 "odoo_id":           p["id"],
                 "sku":               sku,
@@ -96,6 +99,7 @@ class SyncEngine:
                 "weight":            str(p.get("weight", "")) if p.get("weight") else "",
                 "manage_stock":      True,
                 "stock":             int(max(0, qty)),
+                "category":          category_name,
                 "image_b64":         image_b64,
                 "status":            status_woo,
             })
