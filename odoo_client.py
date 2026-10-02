@@ -222,8 +222,20 @@ class OdooClient:
         """
         email = (customer_data.get('email') or '').strip()
         name = (customer_data.get('name') or 'Cliente WooCommerce').strip()
+        company = (customer_data.get('company') or '').strip()
+        tax_id = ''.join(filter(str.isdigit, str(customer_data.get('tax_id') or '')))
+        document_type = (customer_data.get('document_type') or '').upper().strip()
 
-        if email:
+        partner_id = False
+        if tax_id:
+            partners = self.execute_kw(
+                'res.partner', 'search_read', [('vat', '=', tax_id)],
+                fields=['id'], limit=1
+            )
+            if partners:
+                partner_id = partners[0]['id']
+
+        if not partner_id and email:
             partners = self.execute_kw(
                 'res.partner',
                 'search_read',
@@ -233,31 +245,94 @@ class OdooClient:
             )
             if partners:
                 partner_id = partners[0]['id']
-                current = self.execute_kw(
-                    'res.partner', 'read', [partner_id],
-                    fields=['phone', 'street', 'city']
-                )[0]
-                missing = {
-                    key: value for key, value in {
-                        'phone': customer_data.get('phone', ''),
-                        'street': customer_data.get('street', ''),
-                        'city': customer_data.get('city', ''),
-                    }.items() if value and not current.get(key)
-                }
-                if missing:
-                    self.execute_kw('res.partner', 'write', [partner_id], missing)
-                return partner_id
 
-        # Si no existe, crear nuevo
+        country = False
+        country_code = (customer_data.get('country') or 'PE').upper().strip()
+        if country_code:
+            countries = self.execute_kw(
+                'res.country', 'search_read', [('code', '=', country_code)],
+                fields=['id'], limit=1
+            )
+            if countries:
+                country = countries[0]
+
+        state = False
+        department = (customer_data.get('department') or '').strip()
+        if country and department:
+            states = self.execute_kw(
+                'res.country.state', 'search_read',
+                [('country_id', '=', country['id']), '|',
+                 ('code', '=ilike', department), ('name', '=ilike', department)],
+                fields=['id', 'name'], limit=1
+            )
+            if states:
+                state = states[0]
+
+        province = False
+        province_name = (customer_data.get('province') or '').strip()
+        if province_name:
+            province_domain = [('name', '=ilike', province_name)]
+            if state:
+                province_domain.append(('state_id', '=', state['id']))
+            provinces = self.execute_kw(
+                'res.city', 'search_read', province_domain,
+                fields=['id', 'name'], limit=1
+            )
+            if provinces:
+                province = provinces[0]
+
+        district = False
+        district_name = (customer_data.get('district') or '').strip()
+        if district_name:
+            district_domain = [('name', '=ilike', district_name)]
+            if province:
+                district_domain.append(('city_id', '=', province['id']))
+            districts = self.execute_kw(
+                'l10n_pe.res.city.district', 'search_read', district_domain,
+                fields=['id', 'name'], limit=1
+            )
+            if districts:
+                district = districts[0]
+
         partner_vals = {
-            'name': name,
+            'name': company or name,
             'email': email,
             'phone': customer_data.get('phone', ''),
+            'mobile': customer_data.get('phone', ''),
             'street': customer_data.get('street', ''),
-            'city': customer_data.get('city', ''),
+            'street2': customer_data.get('street2', ''),
+            'city': province['name'] if province else (province_name or customer_data.get('city', '')),
+            'zip': customer_data.get('zip', ''),
+            'country_id': country['id'] if country else False,
+            'state_id': state['id'] if state else False,
+            'l10n_pe_district': district['id'] if district else False,
+            'vat': tax_id,
+            'company_type': 'company' if document_type == 'RUC' or company else 'person',
             'customer_rank': 1,
-            'comment': 'Creado automáticamente por el Conector WooCommerce'
         }
+
+        if tax_id:
+            wanted_type = document_type if document_type in ('DNI', 'RUC') else ('RUC' if len(tax_id) == 11 else 'DNI')
+            doc_types = self.execute_kw(
+                'l10n_latam.identification.type', 'search_read',
+                [('name', '=', wanted_type)], fields=['id'], limit=1
+            )
+            if doc_types:
+                partner_vals['l10n_latam_identification_type_id'] = doc_types[0]['id']
+
+        if partner_id:
+            fields = list(partner_vals.keys())
+            current = self.execute_kw('res.partner', 'read', [partner_id], fields=fields)[0]
+            missing = {
+                key: value for key, value in partner_vals.items()
+                if value not in (False, None, '') and not current.get(key)
+            }
+            if missing:
+                self.execute_kw('res.partner', 'write', [partner_id], missing)
+            return partner_id
+
+        # Si no existe, crear nuevo
+        partner_vals['comment'] = 'Creado automáticamente por el Conector WooCommerce'
         try:
             partner_id = self.execute_kw('res.partner', 'create', partner_vals)
             logger.info(f"Cliente creado en Odoo ID: {partner_id} ({name})")
@@ -271,14 +346,28 @@ class OdooClient:
         Crea un pedido de venta en Odoo a partir de una orden de WooCommerce.
         """
         billing = woo_order.get('billing', {})
-        customer_name = f"{billing.get('first_name', '')} {billing.get('last_name', '')}".strip() or woo_order.get('customer_id', 'Cliente Web')
+        metadata = {
+            item.get('key'): item.get('value')
+            for item in woo_order.get('meta_data', [])
+            if isinstance(item, dict) and item.get('key')
+        }
+        customer_name = f"{billing.get('first_name', '')} {billing.get('last_name', '')}".strip() or str(woo_order.get('customer_id') or 'Cliente Web')
         
         partner_id = self.find_or_create_partner({
             'name': customer_name,
+            'company': billing.get('company', ''),
             'email': billing.get('email', ''),
             'phone': billing.get('phone', ''),
             'street': billing.get('address_1', ''),
-            'city': billing.get('city', '')
+            'street2': billing.get('address_2', ''),
+            'city': billing.get('city', ''),
+            'zip': billing.get('postcode', ''),
+            'country': billing.get('country', 'PE'),
+            'department': billing.get('departamento') or billing.get('state', ''),
+            'province': billing.get('provincia', ''),
+            'district': billing.get('distrito') or billing.get('city', ''),
+            'tax_id': billing.get('tax_id') or metadata.get('_billing_tax_id', ''),
+            'document_type': billing.get('document_type') or metadata.get('_billing_document_type', ''),
         })
 
         if not partner_id:
