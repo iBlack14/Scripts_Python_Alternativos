@@ -232,7 +232,21 @@ class OdooClient:
                 limit=1
             )
             if partners:
-                return partners[0]['id']
+                partner_id = partners[0]['id']
+                current = self.execute_kw(
+                    'res.partner', 'read', [partner_id],
+                    fields=['phone', 'street', 'city']
+                )[0]
+                missing = {
+                    key: value for key, value in {
+                        'phone': customer_data.get('phone', ''),
+                        'street': customer_data.get('street', ''),
+                        'city': customer_data.get('city', ''),
+                    }.items() if value and not current.get(key)
+                }
+                if missing:
+                    self.execute_kw('res.partner', 'write', [partner_id], missing)
+                return partner_id
 
         # Si no existe, crear nuevo
         partner_vals = {
@@ -326,6 +340,10 @@ class OdooClient:
 
         # Línea independiente para el flete/método de envío de WooCommerce.
         shipping_lines = woo_order.get('shipping_lines', [])
+        shipping_lines = [
+            line for line in shipping_lines
+            if float(line.get('total', 0.0) or 0.0) > 0
+        ]
         if shipping_lines:
             ship_products = self.execute_kw(
                 'product.product',
