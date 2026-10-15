@@ -184,10 +184,18 @@ class WooClient:
 
     def get_all_categories(self):
         """Obtiene todas las categorías y las indexa por padre y nombre."""
+        return {
+            (int(category.get("parent") or 0), category["name"].strip().casefold()): category
+            for category in self.get_categories()
+            if (category.get("name") or "").strip()
+        }
+
+    def get_categories(self):
+        """Obtiene todas las categorías de productos de WooCommerce."""
         if not self.api:
             self._init_api()
 
-        categories = {}
+        categories = []
         page = 1
         per_page = 100
         while True:
@@ -200,10 +208,7 @@ class WooClient:
                 items = response.json()
                 if not items:
                     break
-                for item in items:
-                    name = (item.get("name") or "").strip()
-                    if name:
-                        categories[(int(item.get("parent") or 0), name.casefold())] = item
+                categories.extend(items)
 
                 if page >= int(response.headers.get("X-WP-TotalPages", 1)):
                     break
@@ -212,6 +217,51 @@ class WooClient:
                 logger.error(f"Excepción al obtener categorías de Woo: {error}")
                 break
         return categories
+
+    def delete_categories_not_in_paths(self, expected_paths):
+        """Elimina categorías Woo que no están en el árbol de categorías de Odoo."""
+        categories = self.get_categories()
+        categories_by_id = {int(category["id"]): category for category in categories}
+        paths = {}
+
+        def category_path(category_id, visiting=None):
+            if category_id in paths:
+                return paths[category_id]
+            visiting = visiting or set()
+            if category_id in visiting or category_id not in categories_by_id:
+                return ""
+            visiting.add(category_id)
+            category = categories_by_id[category_id]
+            parent_path = category_path(int(category.get("parent") or 0), visiting)
+            name = (category.get("name") or "").strip()
+            path = f"{parent_path} / {name}".strip(" /") if parent_path else name
+            paths[category_id] = path
+            return path
+
+        expected_paths = set(expected_paths)
+        stale_categories = [
+            category for category in categories
+            if category_path(int(category["id"])) not in expected_paths
+            and category.get("slug") != "uncategorized"
+        ]
+        stale_categories.sort(key=lambda category: category_path(int(category["id"])).count(" / "), reverse=True)
+
+        removed = 0
+        errors = []
+        for category in stale_categories:
+            try:
+                response = self.api.delete(f"products/categories/{category['id']}", params={"force": True})
+                if response.status_code == 200:
+                    removed += 1
+                else:
+                    errors.append(f"No se pudo eliminar categoría '{category.get('name')}': {response.text[:200]}")
+            except Exception as error:
+                errors.append(f"Excepción eliminando categoría '{category.get('name')}': {error}")
+
+        if errors:
+            for error in errors:
+                logger.error(error)
+        return {"removed": removed, "errors": errors}
 
     def resolve_category_paths(self, paths):
         """Crea o localiza cada categoría de las rutas y devuelve sus IDs."""
@@ -243,6 +293,34 @@ class WooClient:
             if parent_id and parent_id not in category_ids:
                 category_ids.append(parent_id)
         return category_ids
+
+    def assign_product_categories(self, products):
+        """Asigna a cada producto todas las categorías de su ruta jerárquica."""
+        products_by_sku = self.get_all_products()
+        category_cache = {}
+        updates = []
+
+        for product in products:
+            paths = product.get("category_paths", [])
+            sku = product.get("sku", "")
+            woo_product = products_by_sku.get(sku)
+            if not woo_product or not paths:
+                continue
+
+            cache_key = tuple(paths)
+            if cache_key not in category_cache:
+                category_cache[cache_key] = self.resolve_category_paths(paths)
+            category_ids = category_cache[cache_key]
+            current_ids = [int(category["id"]) for category in woo_product.get("categories", [])]
+            if category_ids != current_ids:
+                updates.append({
+                    "id": woo_product["id"],
+                    "categories": [{"id": category_id} for category_id in category_ids],
+                })
+
+        if not updates:
+            return {"updated": 0, "errors": []}
+        return self.batch_update_products(update_items=updates)
 
     def batch_update_products(self, create_items=None, update_items=None):
         """

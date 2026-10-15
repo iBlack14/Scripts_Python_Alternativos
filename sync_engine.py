@@ -71,11 +71,12 @@ class SyncEngine:
 
         category_map = {int(c["id"]): c for c in odoo_categories if c.get("id") and c.get("name")}
         category_paths = {}
+        category_tree_paths = {}
 
         def category_path(category_id, visiting=None):
             category_id = int(category_id or 0)
-            if category_id in category_paths:
-                return category_paths[category_id]
+            if category_id in category_tree_paths:
+                return category_tree_paths[category_id]
             visiting = visiting or set()
             if category_id in visiting or category_id not in category_map:
                 return []
@@ -84,10 +85,12 @@ class SyncEngine:
             parent = row.get("parent_id")
             path = category_path(parent[0], visiting) if isinstance(parent, (list, tuple)) and parent else []
             name = str(row.get("name") or "").strip()
-            if name.lower() not in ("", "all", "todas"):
-                path = path + [name]
-            category_paths[category_id] = path
-            return path
+            tree_path = path + [name] if name else path
+            category_tree_paths[category_id] = tree_path
+            category_paths[category_id] = [
+                part for part in tree_path if part.lower() not in ("all", "todas")
+            ]
+            return tree_path
 
         for category_id in category_map:
             category_path(category_id)
@@ -148,9 +151,21 @@ class SyncEngine:
             return {"status": "dry-run", "prepared": len(payload)}
 
         if self.use_plugin:
-            return self._push_to_plugin(payload)
+            result = self._push_to_plugin(payload)
         else:
-            return self._push_via_woo_api(payload)
+            result = self._push_via_woo_api(payload)
+
+        expected_category_paths = {
+            " / ".join(path) for path in category_tree_paths.values() if path
+        }
+        expected_category_paths.update(
+            " / ".join(path) for path in category_paths.values() if path
+        )
+        category_cleanup = self.woo.delete_categories_not_in_paths(expected_category_paths)
+        result["categories_removed"] = category_cleanup["removed"]
+        result.setdefault("errors", []).extend(category_cleanup["errors"])
+        logger.info(f"Categorías que no existen en Odoo eliminadas: {category_cleanup['removed']}")
+        return result
 
     def _push_categories_to_plugin(self, categories):
         """Envía el árbol completo; WordPress crea ramas y elimina fantasmas."""
@@ -232,7 +247,15 @@ class SyncEngine:
                 logger.error(f"Lote {idx} excepción: {e}")
 
         logger.info(f"════ FIN SYNC: {total_created} creados, {total_updated} actualizados ════")
-        return {"created": total_created, "updated": total_updated, "errors": total_errors}
+        category_result = self.woo.assign_product_categories(payload)
+        total_errors.extend(category_result.get("errors", []))
+        logger.info(f"Categorías de productos actualizadas: {category_result.get('updated', 0)}")
+        return {
+            "created": total_created,
+            "updated": total_updated,
+            "categories_updated": category_result.get("updated", 0),
+            "errors": total_errors,
+        }
 
     # ── Fallback: API WooCommerce directa ─────────────────────────────────────
     def _push_via_woo_api(self, payload):
@@ -241,7 +264,6 @@ class SyncEngine:
         para subirlas a la Biblioteca de Medios.
         """
         woo_map    = self.woo.get_all_products()
-        category_cache = {}
         create_lst = []
         update_lst = []
         imgs_set   = 0
@@ -263,13 +285,6 @@ class SyncEngine:
                     {"key": "_owc_distributor_price", "value": p.get("distributor_price", "")}
                 ],
             }
-
-            category_paths = p.get("category_paths", [])
-            if category_paths:
-                cache_key = tuple(category_paths)
-                if cache_key not in category_cache:
-                    category_cache[cache_key] = self.woo.resolve_category_paths(category_paths)
-                item["categories"] = [{"id": category_id} for category_id in category_cache[cache_key]]
 
             # ── Lógica de Imágenes (Subir a WP primero) ──────────────
             image_b64 = p.get("image_b64")
@@ -317,6 +332,9 @@ class SyncEngine:
         )
         
         results = self.woo.batch_update_products(create_items=create_lst, update_items=update_lst)
+        category_result = self.woo.assign_product_categories(payload)
+        results["categories_updated"] = category_result.get("updated", 0)
+        results["errors"].extend(category_result.get("errors", []))
         logger.info(
             f"════ FIN SYNC (API Woo): {results['created']} creados, "
             f"{results['updated']} actualizados ════"
