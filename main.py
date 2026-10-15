@@ -16,26 +16,18 @@ init(autoreset=True)
 
 
 def banner():
-    print(Fore.CYAN + r"""
-  ___  ____   ___   ___    _ _  _____ 
- / _ \|  _ \ / _ \ / _ \  / / || ____|
-| | | | | | | | | | | | |/ /| ||  _|  
-| |_| | |_| | |_| | |_| / / | || |___ 
- \___/|____/ \___/ \___/_/  |_||_____|
- CONECTOR ODOO 15 <---> WOOCOMMERCE
-    """ + Style.RESET_ALL)
+    print(Fore.CYAN + "═" * 50)
+    print("   CONECTOR ODOO 15 <---> WOOCOMMERCE")
+    print("═" * 50 + Style.RESET_ALL)
 
 
 def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
-    print(f"\n{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL}")
-    print(f"Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL}  "
-          f"→  Categorías + Productos + Stock + Precio + Imágenes + Pedidos")
-    print(f"{Fore.YELLOW}Árbol de categorías Odoo activo; elimina categorías fantasma en WooCommerce.{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL} (Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL})")
     print("Presiona Ctrl + C para detener.\n")
 
     def ciclo():
-        logger.info(f"─── Iniciando ciclo (cada {SYNC_INTERVAL_SECONDS}s) ───")
+        logger.info(f"─── Ciclo de sincronización ({SYNC_INTERVAL_SECONDS}s) ───")
         try:
             engine.sync_all(dry_run=dry_run)
         except Exception as e:

@@ -8,7 +8,7 @@ Incluye jerarquía completa de categorías y limpieza de categorías fantasma.
 import requests
 from odoo_client import OdooClient
 from woo_client import WooClient
-from config import ODOO_MATCH_FIELD, SYNC_ONLY_SALE_OK, logger
+from config import ODOO_MATCH_FIELD, SYNC_ONLY_SALE_OK, WOO_VERIFY_SSL, logger
 import os
 
 
@@ -17,6 +17,7 @@ class SyncEngine:
         self.odoo = OdooClient()
         self.woo  = WooClient()
         self.match_field = ODOO_MATCH_FIELD
+        self.verify_ssl  = WOO_VERIFY_SSL
 
         # Plugin WordPress (opcional)
         self.woo_url      = os.getenv("WOO_URL", "").rstrip("/")
@@ -36,7 +37,7 @@ class SyncEngine:
             logger.warning("WOO_API_TOKEN no configurado.")
             return None
         try:
-            r = requests.get(self._pu("status"), headers=self._ph(), timeout=10, verify=False)
+            r = requests.get(self._pu("status"), headers=self._ph(), timeout=10, verify=self.verify_ssl)
             if r.status_code == 200:
                 d = r.json()
                 logger.info(f"Plugin: {d.get('plugin')} v{d.get('version')} | WC {d.get('woocommerce_version')}")
@@ -181,7 +182,7 @@ class SyncEngine:
             response = requests.post(
                 self._pu("push-categories"),
                 json={"categories": payload, "delete_missing": True},
-                headers=self._ph(), timeout=120, verify=False,
+                headers=self._ph(), timeout=120, verify=self.verify_ssl,
             )
             if response.status_code != 200:
                 logger.error(f"Categorías HTTP {response.status_code}: {response.text[:400]}")
@@ -225,7 +226,7 @@ class SyncEngine:
                     json={"products": chunk},
                     headers=self._ph(),
                     timeout=120,
-                    verify=False,
+                    verify=self.verify_ssl,
                 )
                 if r.status_code == 200:
                     d = r.json()
@@ -371,7 +372,7 @@ class SyncEngine:
                     json={"stock": chunk},
                     headers=self._ph(),
                     timeout=60,
-                    verify=False,
+                    verify=self.verify_ssl,
                 )
                 if r.status_code == 200:
                     d = r.json()
@@ -404,10 +405,12 @@ class SyncEngine:
     #  PEDIDOS WooCommerce → Odoo
     # ══════════════════════════════════════════════════════════════════════════
     def sync_orders_to_odoo(self, dry_run=False):
-        logger.info("═══ Importando Pedidos WooCommerce → Odoo ═══")
-        orders   = self.woo.get_orders(status="processing")
-        logger.info(f"WooCommerce: {len(orders)} pedidos en 'processing'.")
+        orders = self.woo.get_orders(status="processing")
+        if not orders:
+            logger.debug("WooCommerce: sin pedidos en 'processing'.")
+            return {"imported": 0, "total": 0}
 
+        logger.info(f"═══ Importando {len(orders)} Pedidos WooCommerce → Odoo ═══")
         imported = 0
         for order in orders:
             oid = order.get("id")
@@ -425,17 +428,16 @@ class SyncEngine:
     #  CANCELACIONES Odoo → WooCommerce
     # ══════════════════════════════════════════════════════════════════════════
     def sync_cancellations_to_woo(self, dry_run=False):
-        logger.info("═══ Sincronizando Cancelaciones Odoo → WooCommerce ═══")
         cancelled = self.odoo.execute_kw(
             "sale.order", "search_read",
             [("state", "=", "cancel"), ("client_order_ref", "like", "WOO-")],
             fields=["id", "name", "client_order_ref", "state"],
         )
         if not cancelled:
-            logger.info("Sin pedidos cancelados con referencia WooCommerce.")
+            logger.debug("Sin pedidos cancelados con referencia WooCommerce.")
             return {"cancelled": 0}
 
-        logger.info(f"Odoo: {len(cancelled)} cancelados con ref WooCommerce.")
+        logger.info(f"═══ Sincronizando Cancelaciones Odoo → WooCommerce ({len(cancelled)}) ═══")
         count = 0
         for order in cancelled:
             ref    = order.get("client_order_ref", "")

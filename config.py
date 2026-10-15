@@ -6,21 +6,59 @@ Carga variables de entorno y define parámetros del sistema.
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
+import warnings
+import urllib3
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env si existe
 load_dotenv()
 
-# Logger principal
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("sync_activity.log", encoding="utf-8")
-    ]
+# Silenciar advertencias tempranas (InsecureRequestWarning, versiones no soportadas, etc.)
+warnings.filterwarnings("ignore", message=".*Unverified HTTPS request.*")
+warnings.filterwarnings("ignore", message=".*doesn't match a supported version.*")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
+
+try:
+    from requests.exceptions import RequestsDependencyWarning
+    warnings.filterwarnings("ignore", category=RequestsDependencyWarning)
+except Exception:
+    pass
+
+try:
+    import requests.packages.urllib3
+    requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+
+# Nivel de log configurable por .env (ej: LOG_LEVEL=INFO o LOG_LEVEL=WARNING)
+LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_STR, logging.INFO)
+
+# Formato limpio y consistente (sin microsegundos redundantes)
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# Handlers: consola + archivo rotativo (máx 5MB, 3 backups) para evitar consumo excesivo de disco
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+
+file_handler = RotatingFileHandler(
+    "sync_activity.log",
+    maxBytes=5 * 1024 * 1024,
+    backupCount=3,
+    encoding="utf-8"
 )
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+
+# Logger principal
 logger = logging.getLogger("OdooWooConnector")
+logger.setLevel(LOG_LEVEL)
+if not logger.handlers:
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+logger.propagate = False
 
 # Odoo Settings
 ODOO_URL = os.getenv("ODOO_URL", "http://localhost:8069").rstrip("/")
