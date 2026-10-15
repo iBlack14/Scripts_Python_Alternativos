@@ -182,6 +182,68 @@ class WooClient:
         logger.info(f"Se encontraron {len(products_by_sku)} productos con SKU en WooCommerce.")
         return products_by_sku
 
+    def get_all_categories(self):
+        """Obtiene todas las categorías y las indexa por padre y nombre."""
+        if not self.api:
+            self._init_api()
+
+        categories = {}
+        page = 1
+        per_page = 100
+        while True:
+            try:
+                response = self.api.get("products/categories", params={"per_page": per_page, "page": page})
+                if response.status_code != 200:
+                    logger.error(f"Error al obtener categorías de Woo (página {page}): {response.text[:200]}")
+                    break
+
+                items = response.json()
+                if not items:
+                    break
+                for item in items:
+                    name = (item.get("name") or "").strip()
+                    if name:
+                        categories[(int(item.get("parent") or 0), name.casefold())] = item
+
+                if page >= int(response.headers.get("X-WP-TotalPages", 1)):
+                    break
+                page += 1
+            except Exception as error:
+                logger.error(f"Excepción al obtener categorías de Woo: {error}")
+                break
+        return categories
+
+    def resolve_category_paths(self, paths):
+        """Crea o localiza cada categoría de las rutas y devuelve sus IDs."""
+        categories = self.get_all_categories()
+        category_ids = []
+
+        for path in paths:
+            parent_id = 0
+            for name in (part.strip() for part in path.split(" / ")):
+                if not name:
+                    continue
+                key = (parent_id, name.casefold())
+                category = categories.get(key)
+                if not category:
+                    try:
+                        response = self.api.post("products/categories", {"name": name, "parent": parent_id})
+                        if response.status_code not in (200, 201):
+                            logger.error(f"No se pudo crear categoría '{name}': {response.text[:200]}")
+                            parent_id = None
+                            break
+                        category = response.json()
+                        categories[key] = category
+                    except Exception as error:
+                        logger.error(f"Excepción creando categoría '{name}': {error}")
+                        parent_id = None
+                        break
+                parent_id = int(category["id"])
+
+            if parent_id and parent_id not in category_ids:
+                category_ids.append(parent_id)
+        return category_ids
+
     def batch_update_products(self, create_items=None, update_items=None):
         """
         Ejecuta creación o actualización en bloque (hasta 100 por petición).

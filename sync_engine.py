@@ -123,6 +123,7 @@ class SyncEngine:
             category_id = categ[0] if isinstance(categ, (list, tuple)) and categ else 0
             path = category_paths.get(int(category_id or 0), [])
             category_name = " / ".join(path)
+            category_paths_for_product = [" / ".join(path[:index]) for index in range(1, len(path) + 1)]
 
             payload.append({
                 "odoo_id":           p["id"],
@@ -135,6 +136,7 @@ class SyncEngine:
                 "manage_stock":      True,
                 "stock":             int(max(0, qty)),
                 "category":          category_name,
+                "category_paths":    category_paths_for_product,
                 "image_b64":         image_b64,
                 "status":            status_woo,
             })
@@ -239,6 +241,7 @@ class SyncEngine:
         para subirlas a la Biblioteca de Medios.
         """
         woo_map    = self.woo.get_all_products()
+        category_cache = {}
         create_lst = []
         update_lst = []
         imgs_set   = 0
@@ -260,6 +263,13 @@ class SyncEngine:
                     {"key": "_owc_distributor_price", "value": p.get("distributor_price", "")}
                 ],
             }
+
+            category_paths = p.get("category_paths", [])
+            if category_paths:
+                cache_key = tuple(category_paths)
+                if cache_key not in category_cache:
+                    category_cache[cache_key] = self.woo.resolve_category_paths(category_paths)
+                item["categories"] = [{"id": category_id} for category_id in category_cache[cache_key]]
 
             # ── Lógica de Imágenes (Subir a WP primero) ──────────────
             image_b64 = p.get("image_b64")
