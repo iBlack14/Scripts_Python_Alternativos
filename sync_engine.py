@@ -120,7 +120,6 @@ class SyncEngine:
             price_pub  = p.get("public_price")  or p.get("list_price", 0.0)
             price_dist = p.get("ferretero_price") or p.get("list_price", 0.0)
             
-            image_b64  = p.get("image_1920") or p.get("image_128") or ""
             status_woo = "publish" if p.get("active", True) else "draft"
 
             categ = p.get("categ_id", [None, ""])
@@ -141,7 +140,6 @@ class SyncEngine:
                 "stock":             int(max(0, qty)),
                 "category":          category_name,
                 "category_paths":    category_paths_for_product,
-                "image_b64":         image_b64,
                 "status":            status_woo,
             })
 
@@ -153,6 +151,9 @@ class SyncEngine:
 
         if self.use_plugin:
             result = self._push_to_plugin(payload)
+            image_result = self._sync_missing_images(payload)
+            result["images_uploaded"] = image_result.get("uploaded", 0)
+            result.setdefault("errors", []).extend(image_result.get("errors", []))
         else:
             result = self._push_via_woo_api(payload)
 
@@ -167,6 +168,63 @@ class SyncEngine:
         result.setdefault("errors", []).extend(category_cleanup["errors"])
         logger.info(f"Categorías que no existen en Odoo eliminadas: {category_cleanup['removed']}")
         return result
+
+    def _sync_missing_images(self, payload):
+        """Transfiere imágenes solo cuando WordPress confirma que faltan."""
+        sku_to_odoo_id = {
+            str(item.get("sku", "")): int(item["odoo_id"])
+            for item in payload if item.get("sku") and item.get("odoo_id")
+        }
+        missing_skus = []
+        errors = []
+
+        skus = list(sku_to_odoo_id)
+        for index in range(0, len(skus), 500):
+            try:
+                response = requests.post(
+                    self._pu("missing-images"),
+                    json={"skus": skus[index:index + 500]},
+                    headers=self._ph(), timeout=60, verify=self.verify_ssl,
+                )
+                if response.status_code != 200:
+                    errors.append(f"Consulta de imágenes faltantes HTTP {response.status_code}")
+                    continue
+                missing_skus.extend(response.json().get("missing_skus", []))
+            except Exception as exc:
+                errors.append(f"Consulta de imágenes faltantes: {exc}")
+
+        product_ids = [sku_to_odoo_id[sku] for sku in missing_skus if sku in sku_to_odoo_id]
+        if not product_ids:
+            logger.info("Imágenes: WordPress ya tiene todas las imágenes principales.")
+            return {"uploaded": 0, "errors": errors}
+
+        images = self.odoo.get_product_images(product_ids)
+        id_to_sku = {odoo_id: sku for sku, odoo_id in sku_to_odoo_id.items()}
+        image_payload = [
+            {"sku": id_to_sku[row["id"]], "image_b64": row.get("image_1920")}
+            for row in images
+            if row.get("id") in id_to_sku and row.get("image_1920")
+        ]
+
+        uploaded = 0
+        for index in range(0, len(image_payload), 5):
+            try:
+                response = requests.post(
+                    self._pu("push-images"),
+                    json={"images": image_payload[index:index + 5]},
+                    headers=self._ph(), timeout=120, verify=self.verify_ssl,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    uploaded += int(data.get("uploaded", 0))
+                    errors.extend(data.get("errors", []))
+                else:
+                    errors.append(f"Envío de imágenes HTTP {response.status_code}")
+            except Exception as exc:
+                errors.append(f"Envío de imágenes: {exc}")
+
+        logger.info(f"Imágenes faltantes transferidas: {uploaded}/{len(image_payload)}")
+        return {"uploaded": uploaded, "errors": errors}
 
     def _push_categories_to_plugin(self, categories):
         """Envía el árbol completo; WordPress crea ramas y elimina fantasmas."""
@@ -470,19 +528,17 @@ class SyncEngine:
         return {"cancelled": count}
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  SYNC_ALL: Full loop + Pedidos + Cancelaciones
+    #  SYNC_ALL: ciclo frecuente y liviano
     # ══════════════════════════════════════════════════════════════════════════
     def sync_all(self, dry_run=False):
         """
-        Ciclo completo para el demonio:
-          1. sync_full_loop  → Crear/actualizar productos + precio + stock + imágenes
-          2. sync_orders     → Pedidos WooCommerce → Odoo
-          3. sync_cancel     → Cancelaciones Odoo → WooCommerce
+        Ciclo frecuente para el demonio. El catálogo y las imágenes quedan en
+        --sync-products; no deben retransmitirse cada 10 segundos.
         """
-        res_full   = self.sync_full_loop(dry_run=dry_run)
+        res_stock  = self.sync_stock_only(dry_run=dry_run)
         res_orders = self.sync_orders_to_odoo(dry_run=dry_run)
         res_cancel = self.sync_cancellations_to_woo(dry_run=dry_run)
-        return {"full_sync": res_full, "orders": res_orders, "cancellations": res_cancel}
+        return {"stock": res_stock, "orders": res_orders, "cancellations": res_cancel}
 
     # ── Alias CLI (compatibilidad) ────────────────────────────────────────────
     def sync_products(self, dry_run=False):

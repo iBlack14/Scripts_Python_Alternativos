@@ -54,7 +54,7 @@ def main():
         description="Conector y Sincronizador de Datos entre Odoo 15 y WooCommerce (WordPress)."
     )
     parser.add_argument("--test",          action="store_true", help="Probar conexiones a Odoo y WooCommerce")
-    parser.add_argument("--sync-all",      action="store_true", help="Sincronizar Stock + Pedidos (sin catálogo)")
+    parser.add_argument("--sync-all",      action="store_true", help="Sincronizar stock + pedidos + cancelaciones (sin catálogo pesado)")
     parser.add_argument("--sync-products", action="store_true", help="[Avanzado] Sincronizar catálogo y precios Odoo → WooCommerce")
     parser.add_argument("--sync-images",   action="store_true", help="Sincronizar solo imágenes de productos Odoo → WooCommerce")
     parser.add_argument("--sync-stock",    action="store_true", help="Sincronizar existencias/stock rápidamente")

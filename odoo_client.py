@@ -93,8 +93,8 @@ class OdooClient:
                 'weight',
                 'active',
                 'product_tmpl_id',
-                'image_1920',   # Imagen principal en alta resolución (base64)
-                'image_128',    # Miniatura de respaldo
+                # Las imágenes se consultan aparte y únicamente para los SKU
+                # que WordPress confirme que todavía no tienen una.
             ]
         
         try:

@@ -82,7 +82,8 @@ ODOO_MATCH_FIELD = os.getenv("ODOO_MATCH_FIELD", "default_code")  # 'default_cod
 SYNC_ONLY_SALE_OK = os.getenv("SYNC_ONLY_SALE_OK", "True").lower() in ("true", "1", "yes")
 
 # Intervalo del bucle en SEGUNDOS (tiene prioridad sobre SYNC_INTERVAL_MINUTES)
-# Por defecto: 10 segundos → casi tiempo real
+# El valor de .env puede mantener 10 segundos para stock y pedidos; el demonio
+# ya no ejecuta catálogo completo ni transfiere imágenes en cada ciclo.
 _interval_sec_env = os.getenv("SYNC_INTERVAL_SECONDS", "")
 _interval_min_env = int(os.getenv("SYNC_INTERVAL_MINUTES", "15"))
 
