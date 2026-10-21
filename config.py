@@ -81,6 +81,11 @@ WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 ODOO_MATCH_FIELD = os.getenv("ODOO_MATCH_FIELD", "default_code")  # 'default_code' o 'barcode'
 SYNC_ONLY_SALE_OK = os.getenv("SYNC_ONLY_SALE_OK", "True").lower() in ("true", "1", "yes")
 
+# Imágenes: se revisan una vez al día, nunca en cada ciclo del daemon.
+IMAGE_SYNC_DAILY_TIME = os.getenv("IMAGE_SYNC_DAILY_TIME", "02:00")
+IMAGE_SYNC_TIMEZONE = os.getenv("IMAGE_SYNC_TIMEZONE", "America/Lima")
+IMAGE_SYNC_MAX_MISSING = int(os.getenv("IMAGE_SYNC_MAX_MISSING", "50"))
+
 # Intervalo del bucle en SEGUNDOS (tiene prioridad sobre SYNC_INTERVAL_MINUTES)
 # El valor de .env puede mantener 10 segundos para stock y pedidos; el demonio
 # ya no ejecuta catálogo completo ni transfiere imágenes en cada ciclo.

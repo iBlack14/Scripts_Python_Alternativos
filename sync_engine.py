@@ -8,7 +8,13 @@ Incluye jerarquía completa de categorías y limpieza de categorías fantasma.
 import requests
 from odoo_client import OdooClient
 from woo_client import WooClient
-from config import ODOO_MATCH_FIELD, SYNC_ONLY_SALE_OK, WOO_VERIFY_SSL, logger
+from config import (
+    ODOO_MATCH_FIELD,
+    SYNC_ONLY_SALE_OK,
+    WOO_VERIFY_SSL,
+    IMAGE_SYNC_MAX_MISSING,
+    logger,
+)
 import os
 
 
@@ -193,7 +199,23 @@ class SyncEngine:
             except Exception as exc:
                 errors.append(f"Consulta de imágenes faltantes: {exc}")
 
-        product_ids = [sku_to_odoo_id[sku] for sku in missing_skus if sku in sku_to_odoo_id]
+        missing_skus = list(dict.fromkeys(
+            sku for sku in missing_skus if sku in sku_to_odoo_id
+        ))
+
+        # Protección contra una respuesta defectuosa del plugin. Si por error
+        # reporta todo el catálogo como faltante, no se deben subir cientos de
+        # imágenes ni consumir todo el ancho de banda del hosting.
+        if len(missing_skus) > IMAGE_SYNC_MAX_MISSING:
+            message = (
+                f"Imágenes: WordPress reportó {len(missing_skus)} faltantes; "
+                f"límite seguro {IMAGE_SYNC_MAX_MISSING}. "
+                "Se cancela esta ejecución sin descargar ni subir imágenes."
+            )
+            logger.error(message)
+            return {"uploaded": 0, "errors": [message]}
+
+        product_ids = [sku_to_odoo_id[sku] for sku in missing_skus]
         if not product_ids:
             logger.info("Imágenes: WordPress ya tiene todas las imágenes principales.")
             return {"uploaded": 0, "errors": errors}

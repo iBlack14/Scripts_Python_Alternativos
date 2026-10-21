@@ -8,7 +8,14 @@ import sys
 import time
 import schedule
 from colorama import init, Fore, Style
-from config import validate_config, SYNC_INTERVAL_MINUTES, SYNC_INTERVAL_SECONDS, logger
+from config import (
+    validate_config,
+    SYNC_INTERVAL_MINUTES,
+    SYNC_INTERVAL_SECONDS,
+    IMAGE_SYNC_DAILY_TIME,
+    IMAGE_SYNC_TIMEZONE,
+    logger,
+)
 from sync_engine import SyncEngine
 import test_connection
 
@@ -24,6 +31,7 @@ def banner():
 def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
     print(f"{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL} (Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL})")
+    print(f"Sincronización de imágenes: diaria a las {IMAGE_SYNC_DAILY_TIME} ({IMAGE_SYNC_TIMEZONE})")
     print("Presiona Ctrl + C para detener.\n")
 
     def ciclo():
@@ -33,11 +41,19 @@ def run_daemon(engine, dry_run=False):
         except Exception as e:
             logger.error(f"Error en ciclo: {e}")
 
+    def ciclo_imagenes():
+        logger.info(f"─── Sincronización diaria de imágenes ({IMAGE_SYNC_DAILY_TIME} {IMAGE_SYNC_TIMEZONE}) ───")
+        try:
+            engine.sync_images_only(dry_run=dry_run)
+        except Exception as e:
+            logger.error(f"Error en sincronización diaria de imágenes: {e}")
+
     # Ejecutar inmediatamente al arrancar
     ciclo()
 
     # Repetir cada N segundos
     schedule.every(SYNC_INTERVAL_SECONDS).seconds.do(ciclo)
+    schedule.every().day.at(IMAGE_SYNC_DAILY_TIME, IMAGE_SYNC_TIMEZONE).do(ciclo_imagenes)
 
     try:
         while True:
