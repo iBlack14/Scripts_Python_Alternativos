@@ -203,17 +203,17 @@ class SyncEngine:
             sku for sku in missing_skus if sku in sku_to_odoo_id
         ))
 
-        # Protección contra una respuesta defectuosa del plugin. Si por error
-        # reporta todo el catálogo como faltante, no se deben subir cientos de
-        # imágenes ni consumir todo el ancho de banda del hosting.
-        if len(missing_skus) > IMAGE_SYNC_MAX_MISSING:
-            message = (
-                f"Imágenes: WordPress reportó {len(missing_skus)} faltantes; "
-                f"límite seguro {IMAGE_SYNC_MAX_MISSING}. "
-                "Se cancela esta ejecución sin descargar ni subir imágenes."
+        # Si hay más faltantes que el límite seguro, procesar solo un lote
+        # por ciclo. Así el backlog se vacía gradualmente (ej. 50 cada 15 min)
+        # sin saturar el ancho de banda ni los recursos del hosting.
+        total_missing = len(missing_skus)
+        if total_missing > IMAGE_SYNC_MAX_MISSING:
+            logger.warning(
+                f"Imágenes: {total_missing} faltantes; se procesarán "
+                f"{IMAGE_SYNC_MAX_MISSING} este ciclo (límite por seguridad). "
+                f"El resto se retoma en los próximos ciclos."
             )
-            logger.error(message)
-            return {"uploaded": 0, "errors": [message]}
+            missing_skus = missing_skus[:IMAGE_SYNC_MAX_MISSING]
 
         product_ids = [sku_to_odoo_id[sku] for sku in missing_skus]
         if not product_ids:
