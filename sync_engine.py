@@ -568,5 +568,42 @@ class SyncEngine:
         return self.sync_full_loop(dry_run=dry_run)
 
     def sync_images_only(self, dry_run=False):
-        """Alias → sync_full_loop (imágenes incluidas en cada ciclo)."""
-        return self.sync_full_loop(dry_run=dry_run)
+        """
+        Sincroniza ÚNICAMENTE imágenes faltantes (plugin WordPress).
+        No toca catálogo, precios ni stock. Solo descarga de Odoo las
+        imágenes que Woo confirma que no tiene (endpoint missing-images).
+        """
+        if not self.use_plugin:
+            logger.warning("sync_images_only requiere WOO_API_TOKEN (plugin WordPress).")
+            return {"status": "error", "error": "Plugin no configurado."}
+
+        domain = [("type", "=", "product")]
+        if SYNC_ONLY_SALE_OK:
+            domain.append(("sale_ok", "=", True))
+
+        odoo_products = self.odoo.get_products(
+            domain=domain,
+            fields=["id", "default_code", "barcode"],
+        )
+        if not odoo_products:
+            logger.warning("sync_images_only: Odoo no devolvió productos.")
+            return {"status": "empty"}
+
+        payload = []
+        for p in odoo_products:
+            alt = "barcode" if self.match_field == "default_code" else "default_code"
+            sku = str(p.get(self.match_field) or p.get(alt) or "").strip()
+            if not sku:
+                sku = f"ODOO-{p['id']}"
+            payload.append({"sku": sku, "odoo_id": p["id"]})
+
+        if dry_run:
+            logger.info(f"[DRY-RUN] {len(payload)} SKUs verificados para imágenes.")
+            return {"status": "dry-run", "skus": len(payload)}
+
+        result = self._sync_missing_images(payload)
+        logger.info(
+            f"═══ Imágenes: {result.get('uploaded', 0)} subidas "
+            f"(de {len(payload)} SKUs verificados) ═══"
+        )
+        return result

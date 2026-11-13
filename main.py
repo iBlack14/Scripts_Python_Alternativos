@@ -40,6 +40,12 @@ def run_daemon(engine, dry_run=False):
             engine.sync_all(dry_run=dry_run)
         except Exception as e:
             logger.error(f"Error en ciclo: {e}")
+        # Imágenes: solo las que Woo confirma que faltan (ligero, sin catálogo)
+        if engine.use_plugin:
+            try:
+                engine.sync_images_only(dry_run=dry_run)
+            except Exception as e:
+                logger.error(f"Error en sincronización de imágenes: {e}")
 
     def ciclo_imagenes():
         logger.info(f"─── Sincronización diaria de imágenes ({IMAGE_SYNC_DAILY_TIME} {IMAGE_SYNC_TIMEZONE}) ───")

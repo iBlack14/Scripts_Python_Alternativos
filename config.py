@@ -33,7 +33,7 @@ except Exception:
     pass
 
 # Nivel de log configurable por .env (ej: LOG_LEVEL=INFO o LOG_LEVEL=WARNING)
-LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "DEBUG").upper()
 LOG_LEVEL = getattr(logging, LOG_LEVEL_STR, logging.INFO)
 
 # Formato limpio y consistente (sin microsegundos redundantes)
