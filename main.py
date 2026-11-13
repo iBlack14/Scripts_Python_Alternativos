@@ -14,6 +14,7 @@ from config import (
     SYNC_INTERVAL_SECONDS,
     IMAGE_SYNC_DAILY_TIME,
     IMAGE_SYNC_TIMEZONE,
+    IMAGE_SYNC_MAX_MISSING,
     logger,
 )
 from sync_engine import SyncEngine
@@ -31,8 +32,12 @@ def banner():
 def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
     print(f"{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL} (Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL})")
-    print(f"Sincronización de imágenes: diaria a las {IMAGE_SYNC_DAILY_TIME} ({IMAGE_SYNC_TIMEZONE})")
+    print(f"Sincronización de imágenes: al inicio y cada 4 horas (límite {IMAGE_SYNC_MAX_MISSING}/ciclo)")
     print("Presiona Ctrl + C para detener.\n")
+
+    # Mientras haya backlog de imágenes se revisa en cada ciclo;
+    # cuando se acabe, el schedule de 4 horas toma el relevo.
+    image_backlog_active = {"value": True}
 
     def ciclo():
         logger.info(f"─── Ciclo de sincronización ({SYNC_INTERVAL_SECONDS}s) ───")
@@ -41,25 +46,32 @@ def run_daemon(engine, dry_run=False):
         except Exception as e:
             logger.error(f"Error en ciclo: {e}")
         # Imágenes: solo las que Woo confirma que faltan (ligero, sin catálogo)
-        if engine.use_plugin:
+        if engine.use_plugin and image_backlog_active["value"]:
             try:
-                engine.sync_images_only(dry_run=dry_run)
+                res = engine.sync_images_only(dry_run=dry_run)
+                if res.get("uploaded", 0) < IMAGE_SYNC_MAX_MISSING:
+                    image_backlog_active["value"] = False
+                    logger.info("Imágenes al día. Próxima revisión automática en 4 horas.")
             except Exception as e:
                 logger.error(f"Error en sincronización de imágenes: {e}")
 
     def ciclo_imagenes():
-        logger.info(f"─── Sincronización diaria de imágenes ({IMAGE_SYNC_DAILY_TIME} {IMAGE_SYNC_TIMEZONE}) ───")
+        logger.info("─── Sincronización de imágenes (revisión cada 4h) ───")
         try:
-            engine.sync_images_only(dry_run=dry_run)
+            res = engine.sync_images_only(dry_run=dry_run)
+            # Si la revisión de 4h encuentra backlog nuevo, volver a
+            # revisarla en cada ciclo hasta vaciarlo.
+            if res.get("uploaded", 0) >= IMAGE_SYNC_MAX_MISSING:
+                image_backlog_active["value"] = True
         except Exception as e:
-            logger.error(f"Error en sincronización diaria de imágenes: {e}")
+            logger.error(f"Error en sincronización de imágenes: {e}")
 
-    # Ejecutar inmediatamente al arrancar
+    # Ejecutar inmediatamente al arrancar (incluye imágenes si hay backlog)
     ciclo()
 
     # Repetir cada N segundos
     schedule.every(SYNC_INTERVAL_SECONDS).seconds.do(ciclo)
-    schedule.every().day.at(IMAGE_SYNC_DAILY_TIME, IMAGE_SYNC_TIMEZONE).do(ciclo_imagenes)
+    schedule.every(4).hours.do(ciclo_imagenes)
 
     try:
         while True:
