@@ -32,7 +32,7 @@ def banner():
 def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
     print(f"{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL} (Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL})")
-    print(f"Sincronización de imágenes: al inicio y cada 4 horas (límite {IMAGE_SYNC_MAX_MISSING}/ciclo)")
+    print(f"Sincronización de imágenes: al inicio, cada ciclo hasta terminar, luego diaria a las {IMAGE_SYNC_DAILY_TIME} (límite {IMAGE_SYNC_MAX_MISSING}/ciclo)")
     print("Presiona Ctrl + C para detener.\n")
 
     # Mientras haya backlog de imágenes se revisa en cada ciclo;
@@ -51,15 +51,15 @@ def run_daemon(engine, dry_run=False):
                 res = engine.sync_images_only(dry_run=dry_run)
                 if res.get("uploaded", 0) < IMAGE_SYNC_MAX_MISSING:
                     image_backlog_active["value"] = False
-                    logger.info("Imágenes al día. Próxima revisión automática en 4 horas.")
+                    logger.info(f"Imágenes al día. Próxima revisión automática diaria a las {IMAGE_SYNC_DAILY_TIME}.")
             except Exception as e:
                 logger.error(f"Error en sincronización de imágenes: {e}")
 
     def ciclo_imagenes():
-        logger.info("─── Sincronización de imágenes (revisión cada 4h) ───")
+        logger.info(f"─── Sincronización de imágenes (revisión diaria {IMAGE_SYNC_DAILY_TIME}) ───")
         try:
             res = engine.sync_images_only(dry_run=dry_run)
-            # Si la revisión de 4h encuentra backlog nuevo, volver a
+            # Si la revisión diaria encuentra backlog nuevo, volver a
             # revisarla en cada ciclo hasta vaciarlo.
             if res.get("uploaded", 0) >= IMAGE_SYNC_MAX_MISSING:
                 image_backlog_active["value"] = True
@@ -71,7 +71,8 @@ def run_daemon(engine, dry_run=False):
 
     # Repetir cada N segundos
     schedule.every(SYNC_INTERVAL_SECONDS).seconds.do(ciclo)
-    schedule.every(4).hours.do(ciclo_imagenes)
+    # Diario a la hora configurada (hora local del servidor, sin pytz)
+    schedule.every().day.at(IMAGE_SYNC_DAILY_TIME).do(ciclo_imagenes)
 
     try:
         while True:
