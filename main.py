@@ -4,6 +4,8 @@ CLI para sincronización manual o demonio programado.
 """
 
 import argparse
+import json
+import os
 import sys
 import time
 import schedule
@@ -35,8 +37,26 @@ def run_daemon(engine, dry_run=False):
     print(f"Sincronización de imágenes: al inicio, cada ciclo hasta terminar, luego diaria a las {IMAGE_SYNC_DAILY_TIME} (límite {IMAGE_SYNC_MAX_MISSING}/ciclo)")
     print("Presiona Ctrl + C para detener.\n")
 
+    # Sync inicial de catálogo: corre UNA sola vez (state.json).
+    # Crea productos faltantes, precios y categorías. Si el archivo
+    # existe, se salta directo al ciclo ligero.
+    STATE_FILE = "state.json"
+    initial_sync_done = os.path.exists(STATE_FILE)
+
+    if not initial_sync_done and not dry_run:
+        logger.info("═══ PRIMER INICIO: sincronización inicial de catálogo ═══")
+        try:
+            engine.sync_products(dry_run=dry_run)
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"initial_sync_at": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+            logger.info("Sync inicial completado. state.json creado.")
+        except Exception as e:
+            logger.error(f"Error en sync inicial (se reintentará en el próximo arranque): {e}")
+    elif initial_sync_done:
+        logger.debug("Sync inicial ya realizado (state.json existe).")
+
     # Mientras haya backlog de imágenes se revisa en cada ciclo;
-    # cuando se acabe, el schedule de 4 horas toma el relevo.
+    # cuando se acabe, el schedule diario toma el relevo.
     image_backlog_active = {"value": True}
 
     def ciclo():
