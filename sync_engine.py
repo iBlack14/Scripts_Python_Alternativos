@@ -185,10 +185,23 @@ class SyncEngine:
             str(item.get("sku", "")): int(item["odoo_id"])
             for item in payload if item.get("sku") and item.get("odoo_id")
         }
+
+        # SKUs que Odoo ya confirmó SIN imagen: no se vuelven a consultar
+        # cada ciclo (ahorra requests). Se re-validan una vez al día por si
+        # alguien les cargó imagen en Odoo.
+        state = load_state()
+        no_image = state.get("no_image_skus") or {}
+        today = time.strftime("%Y-%m-%d")
+        skus = [
+            sku for sku in sku_to_odoo_id
+            if no_image.get(sku) != today
+        ]
+        skipped_no_img = len(sku_to_odoo_id) - len(skus)
+        if skipped_no_img:
+            logger.debug(f"Imágenes: {skipped_no_img} SKUs sin imagen en Odoo omitidos (re-check diario).")
+
         missing_skus = []
         errors = []
-
-        skus = list(sku_to_odoo_id)
         for index in range(0, len(skus), 500):
             try:
                 response = requests.post(
@@ -226,11 +239,30 @@ class SyncEngine:
 
         images = self.odoo.get_product_images(product_ids)
         id_to_sku = {odoo_id: sku for sku, odoo_id in sku_to_odoo_id.items()}
+
+        # Marcar SKUs sin imagen en Odoo para no re-consultarlos cada ciclo.
+        # Si mañana alguien les carga imagen, el re-check diario los retoma.
+        rows_by_id = {row.get("id"): row for row in images}
+        for odoo_id in product_ids:
+            sku = id_to_sku.get(odoo_id)
+            if not sku:
+                continue
+            row = rows_by_id.get(odoo_id)
+            if row and row.get(ODOO_IMAGE_FIELD):
+                no_image.pop(sku, None)  # tiene imagen: limpiar marca
+            else:
+                no_image[sku] = today
+        state["no_image_skus"] = no_image
+        save_state(state)
+
         image_payload = [
             {"sku": id_to_sku[row["id"]], "image_b64": row.get(ODOO_IMAGE_FIELD)}
             for row in images
             if row.get("id") in id_to_sku and row.get(ODOO_IMAGE_FIELD)
         ]
+        if product_ids and not image_payload:
+            logger.info(f"Imágenes: {len(product_ids)} faltantes en Woo pero sin imagen en Odoo (marcados, re-check diario).")
+            return {"uploaded": 0, "errors": errors}
 
         uploaded = 0
         for index in range(0, len(image_payload), 5):
