@@ -4,7 +4,6 @@ CLI para sincronización manual o demonio programado.
 """
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -20,6 +19,7 @@ from config import (
     logger,
 )
 from sync_engine import SyncEngine
+from state import load_state, save_state
 import test_connection
 
 init(autoreset=True)
@@ -40,16 +40,17 @@ def run_daemon(engine, dry_run=False):
     # Sync inicial de catálogo: corre UNA sola vez (state.json).
     # Crea productos faltantes, precios y categorías. Si el archivo
     # existe, se salta directo al ciclo ligero.
-    STATE_FILE = "state.json"
-    initial_sync_done = os.path.exists(STATE_FILE)
+    state = load_state()
+    initial_sync_done = bool(state.get("initial_sync_at"))
 
     if not initial_sync_done and not dry_run:
         logger.info("═══ PRIMER INICIO: sincronización inicial de catálogo ═══")
         try:
             engine.sync_products(dry_run=dry_run)
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"initial_sync_at": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
-            logger.info("Sync inicial completado. state.json creado.")
+            state = load_state()  # recargar por si sync_products escribió algo
+            state["initial_sync_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
+            logger.info("Sync inicial completado. state.json actualizado.")
         except Exception as e:
             logger.error(f"Error en sync inicial (se reintentará en el próximo arranque): {e}")
     elif initial_sync_done:

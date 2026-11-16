@@ -13,9 +13,13 @@ from config import (
     SYNC_ONLY_SALE_OK,
     WOO_VERIFY_SSL,
     IMAGE_SYNC_MAX_MISSING,
+    ODOO_IMAGE_FIELD,
     logger,
 )
 import os
+import time
+
+from state import load_state, save_state, utc_now_iso
 
 
 class SyncEngine:
@@ -223,9 +227,9 @@ class SyncEngine:
         images = self.odoo.get_product_images(product_ids)
         id_to_sku = {odoo_id: sku for sku, odoo_id in sku_to_odoo_id.items()}
         image_payload = [
-            {"sku": id_to_sku[row["id"]], "image_b64": row.get("image_1920")}
+            {"sku": id_to_sku[row["id"]], "image_b64": row.get(ODOO_IMAGE_FIELD)}
             for row in images
-            if row.get("id") in id_to_sku and row.get("image_1920")
+            if row.get("id") in id_to_sku and row.get(ODOO_IMAGE_FIELD)
         ]
 
         uploaded = 0
@@ -439,10 +443,38 @@ class SyncEngine:
         return self._stock_via_woo_api(stock_map)
 
     def _stock_to_plugin(self, stock_map):
-        stock_list = [{"sku": s, "qty": i["qty"]} for s, i in stock_map.items()]
+        """
+        Envía a Woo solo los SKUs cuyo stock cambió desde el último envío
+        (guardado en state.json). Una vez al día fuerza envío completo
+        para corregir cualquier deriva.
+        """
+        state = load_state()
+        last_stock = state.get("stock") or {}
+        today = time.strftime("%Y-%m-%d")
+        force_full = state.get("stock_full_date") != today or not last_stock
+
+        if force_full:
+            to_send = dict(stock_map)
+            logger.info("Stock: envío completo (primera vez o revisión diaria).")
+        else:
+            to_send = {
+                sku: info for sku, info in stock_map.items()
+                if last_stock.get(sku) != info["qty"]
+            }
+            logger.info(
+                f"Stock: {len(to_send)} cambiados de {len(stock_map)} "
+                f"({len(stock_map) - len(to_send)} sin cambios, omitidos)."
+            )
+
+        if not to_send:
+            logger.info("Stock ya al día. Nada que enviar.")
+            return {"updated": 0, "not_found": 0, "sent": 0}
+
+        stock_list = [{"sku": s, "qty": i["qty"]} for s, i in to_send.items()]
         batch_size = 200
         total_upd  = 0
         total_nf   = 0
+        sent_skus  = []
 
         for i in range(0, len(stock_list), batch_size):
             chunk = stock_list[i : i + batch_size]
@@ -458,14 +490,26 @@ class SyncEngine:
                     d = r.json()
                     total_upd += d.get("updated", 0)
                     total_nf  += d.get("not_found", 0)
+                    sent_skus.extend(item["sku"] for item in chunk)
                     logger.info(f"Stock lote {i//batch_size+1}: Actualizados={d.get('updated')}  No-encontrados={d.get('not_found')}")
                 else:
                     logger.error(f"Stock lote {i//batch_size+1} HTTP {r.status_code}")
             except Exception as e:
                 logger.error(f"Stock excepción: {e}")
 
-        logger.info(f"Stock finalizado: {total_upd} actualizados, {total_nf} no encontrados.")
-        return {"updated": total_upd, "not_found": total_nf}
+        # Guardar solo los SKUs confirmados por el plugin para no perder
+        # cambios si un lote falló.
+        new_stock = dict(last_stock)
+        for sku in sent_skus:
+            if sku in stock_map:
+                new_stock[sku] = stock_map[sku]["qty"]
+        state["stock"] = new_stock
+        if force_full:
+            state["stock_full_date"] = today
+        save_state(state)
+
+        logger.info(f"Stock finalizado: {total_upd} actualizados, {total_nf} no encontrados ({len(sent_skus)} enviados).")
+        return {"updated": total_upd, "not_found": total_nf, "sent": len(sent_skus)}
 
     def _stock_via_woo_api(self, stock_map):
         woo_map = self.woo.get_all_products()
@@ -485,9 +529,19 @@ class SyncEngine:
     #  PEDIDOS WooCommerce → Odoo
     # ══════════════════════════════════════════════════════════════════════════
     def sync_orders_to_odoo(self, dry_run=False):
-        orders = self.woo.get_orders(status="processing")
+        # Solo pedidos modificados desde el último chequeo (state.json).
+        # Sin esto se descargaban hasta 50 órdenes completas cada ciclo
+        # aunque ya estuvieran importadas.
+        state = load_state()
+        last_check = state.get("orders_last_check")
+        check_time = utc_now_iso()  # timestamp ANTES de consultar (solape de seguridad)
+
+        orders = self.woo.get_orders(status="processing", per_page=50, modified_after=last_check)
         if not orders:
-            logger.debug("WooCommerce: sin pedidos en 'processing'.")
+            logger.debug("WooCommerce: sin pedidos nuevos o modificados en 'processing'.")
+            if not dry_run:
+                state["orders_last_check"] = check_time
+                save_state(state)
             return {"imported": 0, "total": 0}
 
         logger.info(f"═══ Importando {len(orders)} Pedidos WooCommerce → Odoo ═══")
@@ -500,6 +554,10 @@ class SyncEngine:
                 continue
             if self.odoo.create_sale_order(order, match_field=self.match_field):
                 imported += 1
+
+        if not dry_run:
+            state["orders_last_check"] = check_time
+            save_state(state)
 
         logger.info(f"Pedidos: {imported}/{len(orders)} importados.")
         return {"imported": imported, "total": len(orders)}
@@ -517,9 +575,20 @@ class SyncEngine:
             logger.debug("Sin pedidos cancelados con referencia WooCommerce.")
             return {"cancelled": 0}
 
-        logger.info(f"═══ Sincronizando Cancelaciones Odoo → WooCommerce ({len(cancelled)}) ═══")
+        # Saltar los que ya se procesaron antes (state.json). Los cancelados
+        # son terminales: una vez cancelado en Woo no vuelve a cambiar.
+        state = load_state()
+        done = set(state.get("cancellations_done") or [])
+        pending = [o for o in cancelled if str(o.get("client_order_ref", "")).replace("WOO-", "").strip() not in done]
+
+        if not pending:
+            logger.debug(f"Cancelaciones: {len(cancelled)} en Odoo, todas ya procesadas.")
+            return {"cancelled": 0}
+
+        logger.info(f"═══ Sincronizando Cancelaciones Odoo → WooCommerce ({len(pending)} nuevas de {len(cancelled)}) ═══")
         count = 0
-        for order in cancelled:
+        new_done = set(done)
+        for order in pending:
             ref    = order.get("client_order_ref", "")
             woo_id = ref.replace("WOO-", "").strip()
             if not ref.startswith("WOO-"):
@@ -530,23 +599,33 @@ class SyncEngine:
                 continue
             try:
                 res = self.woo.api.get(f"orders/{woo_id}")
+                if res.status_code == 404:
+                    new_done.add(woo_id)  # no existe en Woo: no reintentar
+                    continue
                 if res.status_code != 200:
                     logger.warning(f"Orden Woo #{woo_id} no encontrada ({res.status_code}).")
                     continue
                 status = res.json().get("status", "")
                 if status in ("cancelled", "refunded", "completed"):
                     logger.info(f"Woo #{woo_id} ya en '{status}'. Omitido.")
+                    new_done.add(woo_id)
                     continue
                 upd = self.woo.api.put(f"orders/{woo_id}", data={"status": "cancelled"})
                 if upd.status_code == 200:
                     logger.info(f"Woo #{woo_id} ({order['name']}) cancelado.")
+                    new_done.add(woo_id)
                     count += 1
                 else:
                     logger.error(f"Error cancelando Woo #{woo_id}: {upd.status_code}")
             except Exception as e:
                 logger.error(f"Excepción cancelando Woo #{woo_id}: {e}")
 
-        logger.info(f"Cancelaciones: {count}/{len(cancelled)}.")
+        if not dry_run:
+            # Mantener solo los últimos 5000 para no inflar state.json
+            state["cancellations_done"] = list(new_done)[-5000:]
+            save_state(state)
+
+        logger.info(f"Cancelaciones: {count}/{len(pending)}.")
         return {"cancelled": count}
 
     # ══════════════════════════════════════════════════════════════════════════

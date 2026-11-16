@@ -378,24 +378,35 @@ class WooClient:
         """
         return self.batch_update_products(update_items=stock_list)
 
-    def get_orders(self, status="processing", per_page=50):
+    def get_orders(self, status="processing", per_page=50, modified_after=None, max_pages=3):
         """
-        Obtiene órdenes recientes desde WooCommerce.
+        Obtiene órdenes desde WooCommerce.
+        Si se pasa modified_after (ISO-8601), solo devuelve las modificadas
+        desde esa fecha — evita descargar todo el historial en cada ciclo.
         """
         if not self.api:
             self._init_api()
 
+        orders = []
         try:
-            params = {"status": status, "per_page": per_page}
-            res = self.api.get("orders", params=params)
-            if res.status_code == 200:
-                return res.json()
-            else:
-                logger.error(f"Error obteniendo pedidos de WooCommerce: {res.text}")
-                return []
+            for page in range(1, max_pages + 1):
+                params = {"status": status, "per_page": per_page, "page": page}
+                if modified_after:
+                    params["modified_after"] = modified_after
+                res = self.api.get("orders", params=params)
+                if res.status_code != 200:
+                    logger.error(f"Error obteniendo pedidos de WooCommerce: {res.text}")
+                    break
+                batch = res.json()
+                if not isinstance(batch, list) or not batch:
+                    break
+                orders.extend(batch)
+                if len(batch) < per_page:
+                    break
+            return orders
         except Exception as e:
             logger.error(f"Excepción obteniendo pedidos de WooCommerce: {e}")
-            return []
+            return orders
 
     def update_order_status(self, order_id, new_status):
         """

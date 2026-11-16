@@ -166,14 +166,16 @@ class OdooClient:
             logger.error(f"Error obteniendo categorías de Odoo: {e}")
             return []
 
-    def get_product_images(self, product_ids):
+    def get_product_images(self, product_ids, image_field=None):
         """Obtiene las imágenes en base64 de los productos especificados."""
+        from config import ODOO_IMAGE_FIELD
+        field = image_field or ODOO_IMAGE_FIELD
         try:
             return self.execute_kw(
                 'product.product',
                 'read',
                 product_ids,
-                fields=['id', 'image_1920']
+                fields=['id', field]
             )
         except Exception as e:
             logger.error(f"Error obteniendo imágenes de productos: {e}")

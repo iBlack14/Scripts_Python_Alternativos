@@ -9,3 +9,7 @@ sync_activity.log
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Artefactos
+*.zip
+state.json

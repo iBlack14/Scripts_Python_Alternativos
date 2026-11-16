@@ -86,6 +86,10 @@ IMAGE_SYNC_DAILY_TIME = os.getenv("IMAGE_SYNC_DAILY_TIME", "02:00")
 IMAGE_SYNC_TIMEZONE = os.getenv("IMAGE_SYNC_TIMEZONE", "America/Lima")
 IMAGE_SYNC_MAX_MISSING = int(os.getenv("IMAGE_SYNC_MAX_MISSING", "50"))
 
+# Campo de imagen de Odoo a transferir. image_512 pesa ~4-8x menos que
+# image_1920 y WooCommerce genera los thumbnails intermedios solo.
+ODOO_IMAGE_FIELD = os.getenv("ODOO_IMAGE_FIELD", "image_512")
+
 # Intervalo del bucle en SEGUNDOS (tiene prioridad sobre SYNC_INTERVAL_MINUTES)
 # El valor de .env puede mantener 10 segundos para stock y pedidos; el demonio
 # ya no ejecuta catálogo completo ni transfiere imágenes en cada ciclo.
