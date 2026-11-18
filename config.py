@@ -85,8 +85,8 @@ SYNC_ONLY_SALE_OK = os.getenv("SYNC_ONLY_SALE_OK", "True").lower() in ("true", "
 IMAGE_SYNC_DAILY_TIME = os.getenv("IMAGE_SYNC_DAILY_TIME", "02:00")
 IMAGE_SYNC_TIMEZONE = os.getenv("IMAGE_SYNC_TIMEZONE", "America/Lima")
 IMAGE_SYNC_MAX_MISSING = int(os.getenv("IMAGE_SYNC_MAX_MISSING", "50"))
-# Intervalo en meses entre revisiones automáticas de imágenes (default: 2 meses).
-IMAGE_SYNC_INTERVAL_MONTHS = int(os.getenv("IMAGE_SYNC_INTERVAL_MONTHS", "2"))
+# Intervalo en MINUTOS entre revisiones automáticas de imágenes (default: 2 min).
+IMAGE_SYNC_IMAGES_INTERVAL_MINUTES = int(os.getenv("IMAGE_SYNC_IMAGES_INTERVAL_MINUTES", "2"))
 
 # Campo de imagen de Odoo a transferir. image_512 pesa ~4-8x menos que
 # image_1920 y WooCommerce genera los thumbnails intermedios solo.

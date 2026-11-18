@@ -531,7 +531,7 @@ class OWC_API_Receiver {
     // ─── Endpoint: Ajustes del plugin ──────────────────────────────────────────
     public static function handle_get_settings( WP_REST_Request $request ) {
         return new WP_REST_Response( [
-            'image_sync_interval_months' => (int) OWC_Settings::get( 'image_sync_interval_months', 2 ),
+            'image_sync_interval_minutes' => (int) OWC_Settings::get( 'image_sync_interval_minutes', 2 ),
         ], 200 );
     }
 }

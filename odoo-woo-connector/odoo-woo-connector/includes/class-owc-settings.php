@@ -25,7 +25,7 @@ class OWC_Settings {
             'sync_orders'       => 'yes',            // ¿Enviar pedidos a Odoo?
             'auto_create_products' => 'yes',         // ¿Crear productos si no existen en Woo?
             'sync_images'       => 'yes',            // ¿Importar imagen de Odoo cuando falta en Woo?
-            'image_sync_interval_months' => 2,       // Meses entre sincronización de imágenes
+            'image_sync_interval_minutes' => 2,      // Minutos entre sincronización de imágenes
 
             // Modo B2B, Visibilidad de Precios e IGV
             'hide_prices_guest'        => 'yes', // Ocultar precios a visitantes/invitados

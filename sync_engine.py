@@ -65,7 +65,7 @@ class SyncEngine:
         try:
             r = requests.get(self._pu("settings"), headers=self._ph(), timeout=10, verify=self.verify_ssl)
             if r.status_code == 200:
-                return int(r.json().get("image_sync_interval_months", 2))
+                return int(r.json().get("image_sync_interval_minutes", 2))
             logger.debug(f"Plugin settings respondió {r.status_code}")
         except Exception as e:
             logger.debug(f"No se pudo leer intervalo de imágenes desde plugin: {e}")
