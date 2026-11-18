@@ -16,6 +16,7 @@ from config import (
     IMAGE_SYNC_DAILY_TIME,
     IMAGE_SYNC_TIMEZONE,
     IMAGE_SYNC_MAX_MISSING,
+    IMAGE_SYNC_INTERVAL_MONTHS,
     logger,
 )
 from sync_engine import SyncEngine
@@ -34,7 +35,7 @@ def banner():
 def run_daemon(engine, dry_run=False):
     """Ejecuta el conector en modo bucle continuo."""
     print(f"{Fore.GREEN}[MODO BUCLE ACTIVADO]{Style.RESET_ALL} (Intervalo: {Fore.CYAN}{SYNC_INTERVAL_SECONDS}s{Style.RESET_ALL})")
-    print(f"Sincronización de imágenes: al inicio, cada ciclo hasta terminar, luego diaria a las {IMAGE_SYNC_DAILY_TIME} (límite {IMAGE_SYNC_MAX_MISSING}/ciclo)")
+    print(f"Sincronización de imágenes: al inicio, cada ciclo hasta terminar, luego cada {IMAGE_SYNC_INTERVAL_MONTHS} mes(es) a las {IMAGE_SYNC_DAILY_TIME} (límite {IMAGE_SYNC_MAX_MISSING}/ciclo)")
     print("Presiona Ctrl + C para detener.\n")
 
     # Sync inicial de catálogo: corre UNA sola vez (state.json).
@@ -77,13 +78,28 @@ def run_daemon(engine, dry_run=False):
                 logger.error(f"Error en sincronización de imágenes: {e}")
 
     def ciclo_imagenes():
-        logger.info(f"─── Sincronización de imágenes (revisión diaria {IMAGE_SYNC_DAILY_TIME}) ───")
+        logger.info(f"─── Sincronización de imágenes (revisión cada {IMAGE_SYNC_INTERVAL_MONTHS} mes(es) a las {IMAGE_SYNC_DAILY_TIME}) ───")
         try:
-            res = engine.sync_images_only(dry_run=dry_run)
-            # Si la revisión diaria encuentra backlog nuevo, volver a
-            # revisarla en cada ciclo hasta vaciarlo.
-            if res.get("uploaded", 0) >= IMAGE_SYNC_MAX_MISSING:
-                image_backlog_active["value"] = True
+            state = load_state()
+            last_image_sync = state.get("last_image_sync_month")  # formato "YYYY-MM"
+            today_month = time.strftime("%Y-%m")
+
+            should_run = True
+            if last_image_sync:
+                last_y, last_m = map(int, str(last_image_sync).split("-"))
+                curr_y, curr_m = map(int, today_month.split("-"))
+                months_diff = (curr_y - last_y) * 12 + (curr_m - last_m)
+                if months_diff < IMAGE_SYNC_INTERVAL_MONTHS:
+                    should_run = False
+                    logger.info(f"Imágenes: próxima revisión automática en {IMAGE_SYNC_INTERVAL_MONTHS - months_diff} mes(es).")
+
+            if should_run:
+                res = engine.sync_images_only(dry_run=dry_run)
+                # Si la revisión encuentra backlog nuevo, volver a revisarla en cada ciclo hasta vaciarlo.
+                if res.get("uploaded", 0) >= IMAGE_SYNC_MAX_MISSING:
+                    image_backlog_active["value"] = True
+                state["last_image_sync_month"] = today_month
+                save_state(state)
         except Exception as e:
             logger.error(f"Error en sincronización de imágenes: {e}")
 

@@ -118,11 +118,15 @@ class SyncEngine:
             return {"status": "empty"}
 
         payload = []
+        seen_skus = set()
         for p in odoo_products:
             alt = "barcode" if self.match_field == "default_code" else "default_code"
             sku = str(p.get(self.match_field) or p.get(alt) or "").strip()
             if not sku:
                 sku = f"ODOO-{p['id']}"
+            if sku in seen_skus:
+                sku = f"{sku}-{p['id']}"
+            seen_skus.add(sku)
 
             qty        = p.get("qty_available")
             if qty is None:
@@ -357,13 +361,18 @@ class SyncEngine:
                         f"Omitidos={d.get('skipped',0)}"
                     )
                     for err in errs:
-                        logger.warning(f"  [IMG ERROR] {err}")
+                        logger.warning(f"  [PRODUCT ERROR] {err}")
                 else:
                     logger.error(f"Lote {idx} HTTP {r.status_code}: {r.text[:400]}")
             except Exception as e:
                 logger.error(f"Lote {idx} excepción: {e}")
 
         logger.info(f"════ FIN SYNC: {total_created} creados, {total_updated} actualizados ════")
+        # Verificación de categorías: mostrar rutas asignadas (primeros 5 productos)
+        for item in payload[:5]:
+            paths = item.get("category_paths", [])
+            if paths:
+                logger.debug(f"  Categoría SKU {item['sku']}: {' / '.join(paths)}")
         category_result = self.woo.assign_product_categories(payload)
         total_errors.extend(category_result.get("errors", []))
         logger.info(f"Categorías de productos actualizadas: {category_result.get('updated', 0)}")
