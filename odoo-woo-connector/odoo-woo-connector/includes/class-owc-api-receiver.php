@@ -64,6 +64,13 @@ class OWC_API_Receiver {
             'callback'            => [ __CLASS__, 'handle_status' ],
             'permission_callback' => [ __CLASS__, 'check_token' ],
         ]);
+
+        // 4. Ajustes del plugin (leído por Python para intervalos dinámicos)
+        register_rest_route( self::NAMESPACE, '/settings', [
+            'methods'             => 'GET',
+            'callback'            => [ __CLASS__, 'handle_get_settings' ],
+            'permission_callback' => [ __CLASS__, 'check_token' ],
+        ]);
     }
 
     public static function handle_push_categories( WP_REST_Request $request ) {
@@ -518,6 +525,13 @@ class OWC_API_Receiver {
             'last_sync_stock'     => OWC_Settings::get('last_sync_stock')    ?: 'Nunca',
             'last_sync_orders'    => OWC_Settings::get('last_sync_orders')   ?: 'Nunca',
             'status'              => 'ok',
+        ], 200 );
+    }
+
+    // ─── Endpoint: Ajustes del plugin ──────────────────────────────────────────
+    public static function handle_get_settings( WP_REST_Request $request ) {
+        return new WP_REST_Response( [
+            'image_sync_interval_months' => (int) OWC_Settings::get( 'image_sync_interval_months', 2 ),
         ], 200 );
     }
 }

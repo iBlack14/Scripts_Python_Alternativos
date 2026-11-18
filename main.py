@@ -78,7 +78,10 @@ def run_daemon(engine, dry_run=False):
                 logger.error(f"Error en sincronización de imágenes: {e}")
 
     def ciclo_imagenes():
-        logger.info(f"─── Sincronización de imágenes (revisión cada {IMAGE_SYNC_INTERVAL_MONTHS} mes(es) a las {IMAGE_SYNC_DAILY_TIME}) ───")
+        # Intervalo de imágenes: prioridad al valor configurado en el plugin WordPress.
+        plugin_interval = engine.get_plugin_image_interval()
+        interval_months = plugin_interval if plugin_interval is not None else IMAGE_SYNC_INTERVAL_MONTHS
+        logger.info(f"─── Sincronización de imágenes (revisión cada {interval_months} mes(es) a las {IMAGE_SYNC_DAILY_TIME}) ───")
         try:
             state = load_state()
             last_image_sync = state.get("last_image_sync_month")  # formato "YYYY-MM"
@@ -89,9 +92,9 @@ def run_daemon(engine, dry_run=False):
                 last_y, last_m = map(int, str(last_image_sync).split("-"))
                 curr_y, curr_m = map(int, today_month.split("-"))
                 months_diff = (curr_y - last_y) * 12 + (curr_m - last_m)
-                if months_diff < IMAGE_SYNC_INTERVAL_MONTHS:
+                if months_diff < interval_months:
                     should_run = False
-                    logger.info(f"Imágenes: próxima revisión automática en {IMAGE_SYNC_INTERVAL_MONTHS - months_diff} mes(es).")
+                    logger.info(f"Imágenes: próxima revisión automática en {interval_months - months_diff} mes(es).")
 
             if should_run:
                 res = engine.sync_images_only(dry_run=dry_run)

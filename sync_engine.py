@@ -57,6 +57,20 @@ class SyncEngine:
             logger.error(f"Error conectando plugin: {e}")
         return None
 
+    def get_plugin_image_interval(self):
+        """Consulta al plugin el intervalo en meses para sincronizar imágenes.
+        Devuelve None si no hay plugin o falla la consulta."""
+        if not self.use_plugin:
+            return None
+        try:
+            r = requests.get(self._pu("settings"), headers=self._ph(), timeout=10, verify=self.verify_ssl)
+            if r.status_code == 200:
+                return int(r.json().get("image_sync_interval_months", 2))
+            logger.debug(f"Plugin settings respondió {r.status_code}")
+        except Exception as e:
+            logger.debug(f"No se pudo leer intervalo de imágenes desde plugin: {e}")
+        return None
+
     # ══════════════════════════════════════════════════════════════════════════
     #  BUCLE PRINCIPAL: Crear productos + Precio + Stock + Imágenes
     # ══════════════════════════════════════════════════════════════════════════
@@ -320,8 +334,9 @@ class SyncEngine:
     # ── Envío al Plugin WordPress ──────────────────────────────────────────────
     def _push_to_plugin(self, payload):
         """Envía productos al plugin WordPress.
-        Los productos CON imagen van en lotes de 5 (imagen pesa ~2MB, evitar
-        superar post_max_size de PHP). Los SIN imagen van de 100 en 100.
+        Los productos CON imagen van en lotes de 10 (imagen pesa ~2MB, evitar
+        superar post_max_size de PHP). Los SIN imagen van de 500 en 500
+        para actualizar más productos por petición.
         """
         total_created = 0
         total_updated = 0
@@ -333,10 +348,10 @@ class SyncEngine:
         logger.info(f"Productos con imagen: {len(with_img)} | Sin imagen: {len(without_img)}")
 
         batches = []
-        for i in range(0, len(with_img), 5):
-            batches.append(with_img[i:i+5])
-        for i in range(0, len(without_img), 100):
-            batches.append(without_img[i:i+100])
+        for i in range(0, len(with_img), 10):
+            batches.append(with_img[i:i+10])
+        for i in range(0, len(without_img), 500):
+            batches.append(without_img[i:i+500])
 
         for idx, chunk in enumerate(batches, 1):
             tiene_img = any(p.get("image_b64") for p in chunk)
