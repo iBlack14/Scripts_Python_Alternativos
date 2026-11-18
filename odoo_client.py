@@ -175,7 +175,7 @@ class OdooClient:
                 'product.product',
                 'read',
                 product_ids,
-                fields=['id', field]
+                ['id', field]
             )
         except Exception as e:
             logger.error(f"Error obteniendo imágenes de productos: {e}")

@@ -173,6 +173,22 @@ class SyncEngine:
 
         logger.info(f"Preparados {len(payload)} productos.")
 
+        # ── Obtener imágenes de Odoo y adjuntarlas al payload ──
+        # Las imágenes se envían junto con el producto para que WooCommerce
+        # las refleje inmediatamente. Se consultan en lotes para no saturar
+        # XML-RPC, y _push_to_plugin las reparte en lotes pequeños (con img).
+        odoo_ids = [item["odoo_id"] for item in payload]
+        image_by_id = {}
+        for i in range(0, len(odoo_ids), 100):
+            chunk_ids = odoo_ids[i : i + 100]
+            imgs = self.odoo.get_product_images(chunk_ids)
+            for row in imgs:
+                image_by_id[row["id"]] = row.get(ODOO_IMAGE_FIELD, "")
+        for item in payload:
+            item["image_b64"] = image_by_id.get(item["odoo_id"], "")
+        con_img = sum(1 for item in payload if item.get("image_b64"))
+        logger.info(f"Productos con imagen en Odoo: {con_img} de {len(payload)}")
+
         if dry_run:
             logger.info("[DRY-RUN] Sin cambios reales.")
             return {"status": "dry-run", "prepared": len(payload)}
